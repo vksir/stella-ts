@@ -11,6 +11,10 @@
  * - GET /api/conversations/:id/events：SSE。先推送 watch 的初始 view，之后每次 commit 推送新 view；
  *   运行中的流式 partial（pi.live.generation.message）随每次 commit 一并到达前端。
  * - POST /api/conversations/:id/stop：停止当前运行（pi-durable 的 conversation.abort）。
+ * - GET/PUT /api/conversations/:id/settings：会话工作目录（GLOSSARY「工作目录」）。读取用
+ *   conversation.agent()（resolved 值，未设置时为默认工作区）；修改用 conversation.configure()
+ *   写入 pi.agent 文档——env 回调在每次工具调用使用时以当前 cwd 构建执行环境，修改立即生效于
+ *   后续工具调用，无需重启会话（README「Per-Conversation Agent」）。cwd 传 null 恢复默认工作区。
  * - GET /api/conversations/:id/entries：向前翻页加载更早的条目（视图窗口有限）。
  * - 静态资源：生产模式伺服 web/dist（npm run build 产物），npm start 直接可用。
  */
@@ -19,8 +23,8 @@ import type { Conversation, EntryId, Submission, Tx } from "@earendil-works/pi-d
 import { AssistantEntry, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
-import { existsSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { ConversationMeta, initialConversationMeta, truncateTitle } from "./conversations.js";
 import type { Stella } from "./stella.js";
@@ -89,6 +93,37 @@ export function createApp(stella: Stella): Hono {
 			(await tx.doc(ConversationMeta, conversation.id)).deleted = true;
 		}, BACKGROUND_CONTEXT);
 		return c.json({ ok: true });
+	});
+
+	// —— 会话设置：工作目录 ——
+
+	app.get("/api/conversations/:id/settings", async (c) => {
+		const conversation = await requireConversation(stella, c.req.param("id"));
+		if (conversation === undefined) return notFoundConversation(c);
+		const agent = await conversation.agent(BACKGROUND_CONTEXT);
+		return c.json(settingsPayload(stella, agent.cwd));
+	});
+
+	app.put("/api/conversations/:id/settings", async (c) => {
+		const conversation = await requireConversation(stella, c.req.param("id"));
+		if (conversation === undefined) return notFoundConversation(c);
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			return c.json({ error: "请求体应为 JSON" }, 400);
+		}
+		const cwd = readCwdChange(body);
+		if (cwd === undefined) return c.json({ error: '请求体应为 { cwd: "绝对路径" } 或 { cwd: null }（恢复默认）' }, 400);
+		if (cwd !== null) {
+			const invalid = validateWorkspaceDir(cwd);
+			if (invalid !== undefined) return c.json({ error: invalid }, 400);
+		}
+		// configure() 在自己的 commit 里写入 pi.agent；env 回调按当前 cwd 构建执行环境，
+		// 后续工具调用（含已在运行的运行发出的新调用）立即用上新目录。
+		await conversation.configure({ cwd }, BACKGROUND_CONTEXT);
+		const agent = await conversation.agent(BACKGROUND_CONTEXT);
+		return c.json(settingsPayload(stella, agent.cwd));
 	});
 
 	// —— 消息提交 ——
@@ -215,6 +250,42 @@ export function createApp(stella: Stella): Hono {
 	}
 
 	return app;
+}
+
+/** 会话设置的响应体：cwd 是当前生效的工作目录（未显式设置时即默认工作区）。 */
+function settingsPayload(
+	stella: Stella,
+	storedCwd: string | undefined,
+): { cwd: string; defaultWorkspace: string; custom: boolean } {
+	return {
+		cwd: storedCwd ?? stella.config.workspaceDir,
+		defaultWorkspace: stella.config.workspaceDir,
+		custom: storedCwd !== undefined,
+	};
+}
+
+/** 请求体 { cwd: string | null }：null 表示恢复默认工作区；空串等写法非法返回 undefined。 */
+function readCwdChange(body: unknown): string | null | undefined {
+	if (typeof body !== "object" || body === null) return undefined;
+	const cwd = (body as { cwd?: unknown }).cwd;
+	if (cwd === null) return null;
+	if (typeof cwd !== "string") return undefined;
+	const trimmed = cwd.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+/** 校验待设置的工作目录：绝对路径、存在且是目录；不合法时返回中文提示。 */
+function validateWorkspaceDir(dir: string): string | undefined {
+	if (!isAbsolute(dir)) {
+		return `工作目录应为绝对路径，收到的是相对路径："${dir}"。例如 D:\\projects\\demo。`;
+	}
+	if (!existsSync(dir)) {
+		return `目录不存在："${dir}"。请先创建该目录，或改用其他已有路径。`;
+	}
+	if (!statSync(dir).isDirectory()) {
+		return `该路径不是目录："${dir}"。请改用一个目录路径。`;
+	}
+	return undefined;
 }
 
 /** 读取当前消息文本：请求体 { content: string }。 */

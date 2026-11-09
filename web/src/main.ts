@@ -1,11 +1,14 @@
 /**
- * Stella 最小聊天页：会话侧栏（列表/新建/切换/删除）+ 消息流 + 输入框 + 发送/停止，
+ * Stella 聊天页：会话侧栏（列表/新建/切换/删除 + 工作目录设置）+ 消息流 + 输入框 + 发送/停止，
  * EventSource 订阅当前会话的 SSE。
  *
  * 服务端权威：客户端只 POST 当前这条新消息，不带历史；条目全部来自
  * SSE 推送的 watch view（初始 view + 每次 commit 后的新 view）。
  * 运行中的回答来自 view 中 docs["pi.live"].generation.message 的流式 partial
  * （约每 100ms 一次 commit），回答落定后 partial 让位于最终 pi.assistant 条目。
+ * 工具调用以折叠卡片展示：assistant 条目的 toolCall 块给出名称与参数摘要，
+ * pi.tool-result 条目（按 toolCallId 关联）给出输出全文；运行中的调用来自
+ * docs["pi.live"].tools 槽位（状态：排队/运行中，输出随节流 commit 到达）。
  * 切换会话时关闭旧 EventSource 再重订，避免多个连接并存。
  */
 
@@ -15,11 +18,32 @@ interface ContentBlock {
 	type: string;
 	text?: string;
 	name?: string;
+	// 工具调用块（pi.assistant 里）：id 关联 pi.tool-result 条目与 pi.live.tools 槽位
+	id?: string;
+	arguments?: Record<string, unknown>;
+	argumentsError?: string;
 }
 
 interface ModelMessage {
 	role: string;
 	content: string | ContentBlock[];
+}
+
+/** pi.tool-result 条目的 model[0]：工具结果，与 assistant 的 toolCall 块按 toolCallId 关联。 */
+interface ToolResultMessage {
+	role: "toolResult";
+	toolCallId?: string;
+	toolName?: string;
+	content: ContentBlock[];
+	isError?: boolean;
+}
+
+/** pi.live.tools 槽位：当前工具轮次一个调用的运行态。 */
+interface LiveToolSlot {
+	callId?: string;
+	name?: string;
+	status?: "pending" | "running" | "done";
+	output?: string;
 }
 
 interface ChatEntry {
@@ -36,6 +60,7 @@ interface LiveRun {
 interface LiveDoc {
 	run?: LiveRun | null;
 	generation?: { message?: ModelMessage } | null;
+	tools?: LiveToolSlot[] | null;
 	runFailure?: { reason?: string; detail?: unknown };
 }
 
@@ -57,8 +82,31 @@ interface ConversationSummary {
 	createdAt?: number;
 }
 
+/** GET/PUT 会话设置的响应体：cwd 为当前生效值，defaultWorkspace 为服务端配置的默认工作区。 */
+interface WorkspaceSettings {
+	cwd: string;
+	defaultWorkspace: string;
+	custom: boolean;
+}
+
 interface ConversationList {
 	conversations: ConversationSummary[];
+}
+
+/** 收集到的单个工具调用的展示状态：调用参数 + 结果（或运行中）。 */
+interface ToolCard {
+	/** 工具名（read / write / edit / bash …）。 */
+	name: string;
+	/** 关键参数摘要（一行）。 */
+	summary: string;
+	/** 参数原文（JSON），展开后可看。 */
+	argsText: string;
+	/** 结果输出全文；undefined 表示尚未落定。 */
+	output: string | undefined;
+	/** 是否失败（isError）。 */
+	isError: boolean;
+	/** 运行态：done 有结果；running 运行中；pending 排队中；lost 表示槽位已清且无结果（历史边缘）。 */
+	status: "done" | "running" | "pending" | "lost";
 }
 
 // —— 页面状态 ——
@@ -72,6 +120,8 @@ const state = {
 	earlier: [] as ChatEntry[],
 	/** 当前会话的 SSE 连接；切换会话时先 close 旧的再重订。 */
 	source: undefined as EventSource | undefined,
+	/** 当前会话的工作目录设置。 */
+	workspace: undefined as WorkspaceSettings | undefined,
 };
 
 const messagesEl = document.getElementById("messages") as HTMLElement;
@@ -86,6 +136,10 @@ const confirmEl = document.getElementById("confirm") as HTMLElement;
 const confirmTextEl = document.getElementById("confirm-text") as HTMLElement;
 const confirmDeleteEl = document.getElementById("confirm-delete") as HTMLButtonElement;
 const confirmCancelEl = document.getElementById("confirm-cancel") as HTMLButtonElement;
+const workspaceInputEl = document.getElementById("workspace-dir") as HTMLInputElement;
+const workspaceHintEl = document.getElementById("workspace-hint") as HTMLElement;
+const workspaceSaveEl = document.getElementById("save-workspace") as HTMLButtonElement;
+const workspaceResetEl = document.getElementById("reset-workspace") as HTMLButtonElement;
 
 // —— 启动：加载列表，无会话则建一个，然后订阅 ——
 
@@ -120,17 +174,20 @@ async function createConversation(): Promise<void> {
 	inputEl.focus();
 }
 
-/** 切换会话：重置消息状态、关闭旧 EventSource 后重订 SSE。 */
+/** 切换会话：重置消息状态、关闭旧 EventSource 后重订 SSE，并拉取会话设置。 */
 function switchTo(id: number): void {
 	if (state.source !== undefined) state.source.close(); // 释放旧连接，避免多 EventSource 并存
 	state.source = undefined;
 	state.conversationId = id;
 	state.view = null;
 	state.earlier = [];
+	state.workspace = undefined;
 	renderList();
 	setBusyEnabled();
+	renderWorkspace();
 	subscribe(id);
 	render();
+	void loadWorkspace(id).catch(showError);
 }
 
 function subscribe(id: number): void {
@@ -160,8 +217,10 @@ async function deleteConversation(id: number): Promise<void> {
 			state.conversationId = undefined;
 			state.view = null;
 			state.earlier = [];
+			state.workspace = undefined;
 			setConn(false);
 			setBusyEnabled();
+			renderWorkspace();
 			render();
 		} else {
 			switchTo(next);
@@ -200,6 +259,67 @@ async function submitMessage(content: string): Promise<void> {
 	}
 }
 
+// —— 会话设置：工作目录 ——
+
+/** 拉取当前会话的工作目录设置并填充输入框。 */
+async function loadWorkspace(id: number): Promise<void> {
+	state.workspace = (await fetchJson(`/api/conversations/${id}/settings`)) as WorkspaceSettings;
+	renderWorkspace();
+}
+
+/** 将工作目录设置反映到设置区（输入框 + 提示行）。 */
+function renderWorkspace(): void {
+	const settings = state.workspace;
+	const none = state.conversationId === undefined;
+	workspaceInputEl.disabled = none || settings === undefined;
+	workspaceSaveEl.disabled = none || settings === undefined;
+	workspaceResetEl.disabled = none || settings === undefined;
+	if (settings === undefined) {
+		workspaceInputEl.value = none ? "" : "加载中…";
+		workspaceHintEl.textContent = "";
+		return;
+	}
+	if (workspaceInputEl.value !== settings.cwd) workspaceInputEl.value = settings.cwd;
+	workspaceHintEl.textContent = settings.custom
+		? "已自定义（后续工具调用立即生效）"
+		: "默认工作区（服务端 data/workspace）";
+}
+
+/** 保存工作目录：传输入框值；服务端校验失败时返回中文提示，直接展示。 */
+async function saveWorkspace(): Promise<void> {
+	if (state.conversationId === undefined) return;
+	const value = workspaceInputEl.value.trim();
+	workspaceSaveEl.disabled = true;
+	try {
+		state.workspace = (await fetchJson(`/api/conversations/${state.conversationId}/settings`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ cwd: value }),
+		})) as WorkspaceSettings;
+		workspaceInputEl.value = state.workspace.cwd;
+		showBanner(`工作目录已更新：${state.workspace.cwd}`);
+	} finally {
+		renderWorkspace();
+	}
+}
+
+/** 恢复默认工作区：cwd 传 null，服务端清除会话上的显式设置。 */
+async function resetWorkspace(): Promise<void> {
+	if (state.conversationId === undefined) return;
+	workspaceResetEl.disabled = true;
+	try {
+		state.workspace = (await fetchJson(`/api/conversations/${state.conversationId}/settings`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ cwd: null }),
+		})) as WorkspaceSettings;
+		workspaceInputEl.value = state.workspace.cwd;
+		showBanner(`已恢复默认工作区：${state.workspace.cwd}`);
+	} finally {
+		renderWorkspace();
+	}
+}
+
 // —— 渲染 ——
 
 function render(): void {
@@ -229,11 +349,32 @@ function render(): void {
 	if (entries.length === 0 && !busy) {
 		nodes.push(el("div", "empty", "还没有消息。向 Stella 说点什么吧。"));
 	}
+	// 工具调用展示的数据源：结果条目与运行态槽位都按 callId 关联到 assistant 的 toolCall 块
+	const toolResults = new Map<string, ToolResultMessage>();
 	for (const entry of entries) {
-		const node = renderEntry(entry);
+		if (entry.kind !== "pi.tool-result") continue;
+		const message = entry.model?.[0];
+		if (isToolResult(message) && message.toolCallId !== undefined) {
+			toolResults.set(message.toolCallId, message);
+		}
+	}
+	const liveSlots = new Map<string, LiveToolSlot>();
+	for (const slot of live?.tools ?? []) {
+		if (slot.callId !== undefined) liveSlots.set(slot.callId, slot);
+	}
+	const renderedCalls = new Set<string>();
+	for (const entry of entries) {
+		const node = renderEntry(entry, toolResults, liveSlots, renderedCalls);
 		if (node !== undefined) nodes.push(node);
 	}
 	if (streaming && partial !== undefined) nodes.push(renderStreaming(partial));
+	// 运行中的工具调用：还没落到任何条目的槽位（模型刚发起调用、assistant 条目未提交时）在这显示
+	if (busy && live !== undefined) {
+		for (const slot of live.tools ?? []) {
+			if (slot.callId === undefined || renderedCalls.has(slot.callId)) continue;
+			nodes.push(renderToolCard(slotCard(slot, partialToolCall(partial, slot.callId))));
+		}
+	}
 	if (busy && !streaming) nodes.push(el("div", "status", "Stella 正在运行…"));
 	if (failure !== undefined) {
 		nodes.push(el("div", "error-line", failureText(failure.reason)));
@@ -352,36 +493,169 @@ function renderStreaming(message: ModelMessage): HTMLElement {
 	return wrap;
 }
 
-/** 条目按类型渲染：用户消息、assistant 回答；其余（工具调用等）显示占位行。 */
-function renderEntry(entry: ChatEntry): Node | undefined {
+/** 条目按类型渲染：用户消息、assistant 回答（含工具卡片）；tool-result 并入卡片，不单独显示。 */
+function renderEntry(
+	entry: ChatEntry,
+	toolResults: ReadonlyMap<string, ToolResultMessage>,
+	liveSlots: ReadonlyMap<string, LiveToolSlot>,
+	renderedCalls: Set<string>,
+): Node | undefined {
 	switch (entry.kind) {
 		case "pi.user": {
 			const text = extractText(entry.model?.[0]);
 			return el("div", `msg user`, text);
 		}
 		case "pi.assistant": {
+			const message = entry.model?.[0];
 			const wrap = el("div", "msg stella");
-			const text = extractText(entry.model?.[0]);
+			const text = extractText(message);
 			if (text.length > 0) wrap.append(el("span", "text", text));
-			const toolCalls = (entry.model?.[0]?.content as ContentBlock[] | undefined)?.filter(
-				(block) => block.type === "toolCall",
-			);
-			if (toolCalls !== undefined && toolCalls.length > 0) {
-				const names = toolCalls.map((block) => block.name ?? "工具").join("、");
-				wrap.append(el("span", "tool", `（调用了工具：${names}）`));
+			const blocks = Array.isArray(message?.content) ? message.content : [];
+			for (const block of blocks) {
+				if (block.type !== "toolCall" || block.id === undefined) continue;
+				renderedCalls.add(block.id);
+				wrap.append(renderToolCard(callCard(block, toolResults.get(block.id), liveSlots.get(block.id))));
 			}
-			if (text.length === 0 && (toolCalls === undefined || toolCalls.length === 0)) {
+			if (text.length === 0 && !blocks.some((block) => block.type === "toolCall")) {
 				wrap.append(el("span", "placeholder", "（无文本内容）"));
 			}
 			return wrap;
 		}
 		default: {
 			// pi.system 是提示词/工具变化的位置记录，对用户无意义：静默跳过；
-			// 其余（pi.tool-result / pi.reset / pi.compaction / 自定义类型）→ 占位行
-			if (entry.kind === "pi.system") return undefined;
+			// pi.tool-result 已并入 assistant 条目的工具卡片：跳过；
+			// 其余（pi.reset / pi.compaction / 自定义类型）→ 占位行
+			if (entry.kind === "pi.system" || entry.kind === "pi.tool-result") return undefined;
 			return el("div", "msg placeholder", `（${entry.kind}）`);
 		}
 	}
+}
+
+/** assistant 条目里的一个工具调用块 → 卡片状态（参数 + 结果/运行态）。 */
+function callCard(
+	call: ContentBlock,
+	result: ToolResultMessage | undefined,
+	slot: LiveToolSlot | undefined,
+): ToolCard {
+	const name = call.name ?? "工具";
+	const args = call.arguments ?? {};
+	const status: ToolCard["status"] =
+		result !== undefined
+			? "done"
+			: slot?.status === "running" || slot?.status === "pending"
+				? slot.status
+				: "lost";
+	return {
+		name,
+		summary: summarizeToolCall(name, args),
+		argsText:
+			call.argumentsError !== undefined
+				? `（模型给出的参数不是合法 JSON：${call.argumentsError}）`
+				: JSON.stringify(args, null, 2) ?? "",
+		output: result === undefined ? (slot?.output ?? undefined) : resultText(result),
+		isError: result?.isError === true,
+		status,
+	};
+}
+
+/** 运行区槽位（条目里还没有对应调用块时）→ 卡片状态；参数从流式 partial 里找。 */
+function slotCard(slot: LiveToolSlot, call: ContentBlock | undefined): ToolCard {
+	const name = slot.name ?? call?.name ?? "工具";
+	const args = call?.arguments ?? {};
+	const status = slot.status === "pending" || slot.status === "running" ? slot.status : "lost";
+	return {
+		name,
+		summary: summarizeToolCall(name, args),
+		argsText: JSON.stringify(args, null, 2) ?? "",
+		output: slot.output ?? undefined,
+		isError: false,
+		status,
+	};
+}
+
+/** 工具调用折叠卡片：收起显示名称+摘要+状态，展开显示参数与输出全文。 */
+function renderToolCard(card: ToolCard): HTMLElement {
+	const details = document.createElement("details");
+	details.className = `tool-card ${card.status}${card.isError ? " error" : ""}`;
+	const summary = document.createElement("summary");
+	summary.append(
+		el("span", "tool-name", card.name),
+		el("span", "tool-args", card.summary),
+		el("span", "tool-state", toolStateText(card)),
+	);
+	details.append(summary);
+	const body = el("div", "tool-body");
+	body.append(el("div", "tool-section", "参数"), el("pre", "tool-pre", card.argsText || "（无）"));
+	if (card.output !== undefined && card.output.length > 0) {
+		body.append(
+			el("div", "tool-section", card.isError ? "错误输出" : "输出"),
+			el("pre", "tool-pre", card.output),
+		);
+	} else if (card.status === "running" || card.status === "pending") {
+		body.append(el("div", "tool-section", "输出"), el("pre", "tool-pre", "（等待输出…）"));
+	}
+	details.append(body);
+	return details;
+}
+
+/** 卡片状态文案。 */
+function toolStateText(card: ToolCard): string {
+	switch (card.status) {
+		case "running":
+			return "运行中";
+		case "pending":
+			return "排队中";
+		case "done":
+			return card.isError ? "失败" : "完成";
+		default:
+			return "已结束";
+	}
+}
+
+/** 工具调用的关键参数摘要（一行，过长截断）：bash 显示命令，read/write/edit 显示路径与编辑摘要。 */
+function summarizeToolCall(name: string, args: Readonly<Record<string, unknown>>): string {
+	const str = (key: string): string => (typeof args[key] === "string" ? (args[key] as string) : "");
+	let summary: string;
+	switch (name) {
+		case "bash":
+			summary = str("command");
+			break;
+		case "read":
+			summary = str("path");
+			break;
+		case "write": {
+			const content = str("content");
+			summary = `${str("path")}（写入 ${content.length} 字）`;
+			break;
+		}
+		case "edit": {
+			summary = `${str("path")}（替换 ${str("oldText").length} 字 → ${str("newText").length} 字）`;
+			break;
+		}
+		default:
+			summary = JSON.stringify(args) ?? "";
+	}
+	const oneLine = summary.split("\n")[0] ?? "";
+	return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+}
+
+/** 工具结果的输出文本（content 里的 text 块）。 */
+function resultText(result: ToolResultMessage): string {
+	return (result.content ?? [])
+		.filter((block) => block.type === "text" && typeof block.text === "string")
+		.map((block) => block.text ?? "")
+		.join("");
+}
+
+/** 流式 partial 里 id 匹配的 toolCall 块（运行中槽位的参数来源）。 */
+function partialToolCall(partial: ModelMessage | undefined, callId: string): ContentBlock | undefined {
+	const content = partial?.content;
+	if (!Array.isArray(content)) return undefined;
+	return content.find((block) => block.type === "toolCall" && block.id === callId);
+}
+
+function isToolResult(message: ModelMessage | undefined): message is ToolResultMessage {
+	return message?.role === "toolResult";
 }
 
 function extractText(message: ModelMessage | undefined): string {
@@ -465,6 +739,14 @@ function showBanner(message: string): void {
 sendEl.addEventListener("click", send);
 stopEl.addEventListener("click", () => void stopRun());
 newEl.addEventListener("click", () => void createConversation().catch(showError));
+workspaceSaveEl.addEventListener("click", () => void saveWorkspace().catch(showError));
+workspaceResetEl.addEventListener("click", () => void resetWorkspace().catch(showError));
+workspaceInputEl.addEventListener("keydown", (e) => {
+	if (e.key === "Enter") {
+		e.preventDefault();
+		void saveWorkspace().catch(showError);
+	}
+});
 confirmCancelEl.addEventListener("click", closeConfirm);
 confirmDeleteEl.addEventListener("click", () => void performDelete());
 confirmEl.addEventListener("click", (e) => {

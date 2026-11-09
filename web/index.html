@@ -17,6 +17,22 @@
 				<aside id="sidebar">
 					<button id="new-conversation" type="button">＋ 新会话</button>
 					<ul id="conversation-list"></ul>
+					<div id="conversation-settings">
+						<div class="settings-title">会话设置</div>
+						<label id="workspace-label" for="workspace-dir">工作目录</label>
+						<input
+							id="workspace-dir"
+							type="text"
+							spellcheck="false"
+							autocomplete="off"
+							placeholder="绝对路径，如 D:\projects\demo"
+						/>
+						<div id="workspace-hint"></div>
+						<div id="workspace-actions">
+							<button id="save-workspace" type="button">保存</button>
+							<button id="reset-workspace" type="button">恢复默认</button>
+						</div>
+					</div>
 				</aside>
 				<section id="chat">
 					<main id="messages" aria-live="polite"></main>
