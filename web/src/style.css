@@ -317,6 +317,61 @@ body {
 	border: 1px solid #2e4053;
 }
 
+/* 排队中的消息（pi.inbox）：半透明 + 虚线边框，与已入流的用户消息区分 */
+.msg.user.queued {
+	opacity: 0.75;
+	border-style: dashed;
+}
+
+.queued-tag {
+	display: inline-block;
+	margin-left: 8px;
+	color: var(--muted);
+	font-size: 12px;
+	animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* 错误卡片：内嵌在失败那次提交的位置，附重试按钮 */
+.error-card {
+	align-self: flex-start;
+	max-width: 78%;
+	background: #2b1a1e;
+	border: 1px solid #5c2f36;
+	border-radius: 10px;
+	padding: 10px 14px;
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.error-card-text {
+	color: #ff8f8f;
+	font-size: 13px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+.error-card-retry {
+	flex: none;
+	background: #3a2229;
+	color: #ffb3b3;
+	border: 1px solid #5c2f36;
+	border-radius: 999px;
+	padding: 4px 16px;
+	font-size: 13px;
+	cursor: pointer;
+}
+
+.error-card-retry:hover {
+	background: #4a2a32;
+	color: #fff;
+}
+
+.error-card-retry:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
 .msg.stella {
 	align-self: flex-start;
 	background: var(--stella-bg);
@@ -325,6 +380,14 @@ body {
 
 .msg.stella.streaming {
 	border-color: var(--accent);
+}
+
+/* 失败的回答条目（stopReason "error"）：pi-durable 保留的错误 attempt，如实呈现 */
+.msg.stella.failed {
+	background: #2b1a1e;
+	border-color: #5c2f36;
+	color: #ff8f8f;
+	font-size: 13px;
 }
 
 .msg.stella .generating {

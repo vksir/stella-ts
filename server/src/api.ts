@@ -6,6 +6,11 @@
  * - POST /api/conversations/:id/messages：提交当前消息（客户端只发新消息，不带历史——服务端权威）。
  *   提交 admission 与首条消息的标题写入在同一 commit；回答由 pi-durable 的 generation 提交为
  *   AssistantEntry；提交后按 README 用法在 commit 中读取 AssistantEntry，回答经 watch 到达前端。
+ *   排队（README「Busy Conversations」）：submit 缺省 whenIdle 启动运行、whenBusy 以 follow-up
+ *   排队进会话收件箱（view.docs["pi.inbox"]），运行结束（回答或失败）后按入队顺序依次执行——
+ *   运行中 POST 新消息不报错、不清空，本端点不覆写这两个缺省值，pi-durable 语义如实透传。
+ *   请求体可带 requestId：相同 requestId 的重复提交被 pi-durable 幂等去重，返回原提交（GLOSSARY「提交」），
+ *   客户端重试用新 requestId（原提交已失败落定，同 id 只会找回它）。
  * - DELETE /api/conversations/:id：删除会话。pi-durable 1.5.0 没有移除会话的 API，删除是
  *   宿主层归档：先 abort（停运行、撤回排队输入），再置元数据 deleted 标记，列表随之隐藏。
  * - GET /api/conversations/:id/events：SSE。先推送 watch 的初始 view，之后每次 commit 推送新 view；
@@ -426,6 +431,10 @@ function notFoundConversation(c: Context): Response {
  * 等待一次提交尘埃落定，并按 pi-durable README 的用法在 commit 中读取 AssistantEntry：
  * 回答由 generation 提交为 pi.assistant 条目，经 watch 到达前端；此处读取既是 README
  * 用法的落实，也保证回答条目落定后才结束这次提交的处理。
+ *
+ * settled.status 非 done 时（unanswered：运行失败、被停止，或排队中的提交随停止被撤回）
+ * 不产生回答条目；失败原因（runFailure）与排队状态都在 view.docs 里，前端据此渲染错误卡片
+ * 与「等待中」，此处只留服务端日志。
  */
 async function settleSubmission(conversation: Conversation, submission: Submission): Promise<void> {
 	try {

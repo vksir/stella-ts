@@ -11,6 +11,21 @@
  * docs["pi.live"].tools 槽位（状态：排队/运行中，输出随节流 commit 到达）。
  * 切换会话时关闭旧 EventSource 再重订，避免多个连接并存。
  *
+ * 排队（GLOSSARY「提交」/ pi-durable「Busy Conversations」）：会话运行中发送的消息
+ * 不报错，以 follow-up 排队进 docs["pi.inbox"]，前端渲染为带「等待中」标记的用户气泡，
+ * 当前运行结束后由 pi-durable 按入队顺序自动依次执行。停止（abort）会撤回排队输入：
+ * 排队项从 inbox 消失且不产生条目——本端不在流里静默吞掉它，发送时 busy 的消息记录在
+ * 内存（state.queuedSent），随 view 对账：仍在 inbox 或已出现为条目的移出记录，
+ * 其余判定为已随停止撤回并横幅提示（记录仅存内存，刷新后不再提示）。
+ *
+ * 错误卡片 + 重试：运行结束无回答且非用户停止时，docs["pi.live"].runFailure 给出原因
+ * （reason/detail，直到下一次运行开始才清除），前端在失败那次提交的位置（runFailure.first
+ * 之后的最后一条 pi.user 条目之后）渲染内嵌错误卡片：中文文案包裹底层错误 + 重试按钮。
+ * 重试以新 requestId 重新提交同一条用户消息（相同 requestId 只会幂等找回原失败提交）；
+ * 重试的提交按 pi-durable 语义再次放置为一条 pi.user 条目（transcript 中出现重复的用户
+ * 消息，如实呈现不隐藏），新运行开始时 runFailure 清除、错误卡片消失，回答落定后由
+ * 正常回答取代。
+ *
  * 模型切换（GLOSSARY「会话」：会话属性含所选模型）：下拉只列已装 provider 的模型，
  * 按 provider 分组（optgroup）；选中即 PUT /api/conversations/:id/model，服务端
  * configure({ model }) 写入 pi.agent，立即生效于下一条消息——可从回答条目的
@@ -35,6 +50,10 @@ interface ContentBlock {
 interface ModelMessage {
 	role: string;
 	content: string | ContentBlock[];
+	/** 回答条目的停止原因："error" 表示这次尝试失败（pi-durable 保留的错误 attempt）。 */
+	stopReason?: string;
+	/** stopReason 为 "error" 时的底层错误文本。 */
+	errorMessage?: string;
 }
 
 /** pi.tool-result 条目的 model[0]：工具结果，与 assistant 的 toolCall 块按 toolCallId 关联。 */
@@ -69,14 +88,23 @@ interface LiveDoc {
 	run?: LiveRun | null;
 	generation?: { message?: ModelMessage } | null;
 	tools?: LiveToolSlot[] | null;
-	runFailure?: { reason?: string; detail?: unknown };
+	/** 运行结束无回答时的失败原因（含 detail 与失败运行的首条目 id），下一次运行开始时清除。 */
+	runFailure?: { reason?: string; detail?: string; first?: number; inputs?: number[] };
+}
+
+/** pi.inbox 排队项：等待放置的提交（用户输入，mode 为 steer/followUp）。 */
+interface InboxItemView {
+	id: number;
+	mode?: string;
+	/** 用户消息内容（string 或内容块数组）；write 型排队项无此字段，本端不发送。 */
+	content?: string | ContentBlock[];
 }
 
 interface SseView {
 	conversation: { id: number };
 	entries: ChatEntry[];
 	before?: number;
-	docs: Record<string, LiveDoc>;
+	docs: { "pi.live"?: LiveDoc; "pi.inbox"?: { items?: InboxItemView[] } };
 }
 
 interface EntriesPage {
@@ -156,6 +184,8 @@ const state = {
 	modelCatalog: undefined as ModelCatalog | undefined,
 	/** 收藏的模型（"provider/modelId"，按收藏先后）；localStorage 持久化，刷新保持。 */
 	favorites: [] as string[],
+	/** 发送时处于运行中（排队）的消息文本（内存）：用于停止撤回后的提示对账。 */
+	queuedSent: [] as string[],
 };
 
 const messagesEl = document.getElementById("messages") as HTMLElement;
@@ -249,6 +279,7 @@ function switchTo(id: number): void {
 	state.view = null;
 	state.earlier = [];
 	state.workspace = undefined;
+	state.queuedSent = []; // 撤回提示只针对当前会话，切换即弃
 	renderList();
 	setBusyEnabled();
 	renderWorkspace();
@@ -305,13 +336,32 @@ function send(): void {
 	void submitMessage(content);
 }
 
+/** 新 requestId：相同 requestId 的重复提交会被 pi-durable 幂等去重（GLOSSARY「提交」），
+ * 所以每次发送（含重试）都用新 id；它只在网络层重发时防重复，不用于业务幂等。 */
+function newRequestId(): string {
+	return crypto.randomUUID();
+}
+
 async function submitMessage(content: string): Promise<void> {
+	const busy = state.view?.docs["pi.live"]?.run != null; // 发送时在运行：本次提交会排队
+	if (busy) state.queuedSent = [...state.queuedSent, content];
+	await submitWithRequest(content, newRequestId());
+}
+
+/** 重试：以新 requestId 重新提交失败的那条用户消息（同 id 只会找回原失败提交）。 */
+async function retrySubmission(content: string): Promise<void> {
+	const busy = state.view?.docs["pi.live"]?.run != null;
+	if (busy) state.queuedSent = [...state.queuedSent, content];
+	await submitWithRequest(content, newRequestId());
+}
+
+async function submitWithRequest(content: string, requestId: string): Promise<void> {
 	sendEl.disabled = true;
 	try {
 		const response = await fetch(`/api/conversations/${state.conversationId}/messages`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ content }),
+			body: JSON.stringify({ content, requestId }),
 		});
 		if (!response.ok) {
 			const body = (await response.json().catch(() => ({}))) as { error?: string };
@@ -527,6 +577,7 @@ async function resetWorkspace(): Promise<void> {
 function render(): void {
 	const entries = [...state.earlier, ...(state.view?.entries ?? [])];
 	const live = state.view?.docs["pi.live"];
+	const inbox = (state.view?.docs["pi.inbox"]?.items ?? []).filter(isQueuedInput);
 	const run = live?.run ?? undefined;
 	const busy = run !== undefined;
 	const failure = !busy ? live?.runFailure : undefined;
@@ -536,6 +587,10 @@ function render(): void {
 	const answerCommitted =
 		runFirst !== undefined && entries.some((entry) => entry.kind === "pi.assistant" && entry.id >= runFirst);
 	const streaming = busy && partial !== undefined && !answerCommitted;
+
+	// 排队消息对账：发出时在运行中的消息，若已不在 pi.inbox 也未出现在 transcript，
+	// 说明已随停止撤回（pi-durable abort 撤回排队输入，不留条目），横幅提示。
+	reconcileQueuedSent(entries, inbox, busy);
 
 	const nodes: Node[] = [];
 	if (state.conversationId === undefined) {
@@ -564,10 +619,27 @@ function render(): void {
 	for (const slot of live?.tools ?? []) {
 		if (slot.callId !== undefined) liveSlots.set(slot.callId, slot);
 	}
+	// 错误卡片（非用户停止的失败）：内嵌在失败那次运行的位置——失败运行首条目
+	// （runFailure.first）之后的最后一条条目之后（失败 run 会留下一条错误回答条目，
+	// 卡片跟在它后面）；窗口内找不到锚点则退回流末尾。重试内容取该运行最后一条
+	// 用户消息的文本。
+	let errorCard: HTMLElement | undefined;
+	let errorAnchorId: number | undefined;
+	if (failure !== undefined && failure.reason !== "aborted") {
+		const placement = failurePlacement(entries, failure.first);
+		if (placement !== undefined) {
+			errorAnchorId = placement.anchorId;
+			errorCard = renderErrorCard(failure, placement.retryText);
+		}
+	}
 	const renderedCalls = new Set<string>();
 	for (const entry of entries) {
 		const node = renderEntry(entry, toolResults, liveSlots, renderedCalls);
 		if (node !== undefined) nodes.push(node);
+		if (entry.id === errorAnchorId && errorCard !== undefined) {
+			nodes.push(errorCard); // 内嵌在对应提交位置
+			errorCard = undefined;
+		}
 	}
 	if (streaming && partial !== undefined) nodes.push(renderStreaming(partial));
 	// 运行中的工具调用：还没落到任何条目的槽位（模型刚发起调用、assistant 条目未提交时）在这显示
@@ -577,9 +649,13 @@ function render(): void {
 			nodes.push(renderToolCard(slotCard(slot, partialToolCall(partial, slot.callId))));
 		}
 	}
+	// 排队中的提交（pi.inbox）：当前运行结束后自动依次执行；真实条目（pi.user）
+	// 在放置后才出现，这里只是运行态的预告。
+	for (const item of inbox) nodes.push(renderQueuedBubble(item));
 	if (busy && !streaming) nodes.push(el("div", "status", "Stella 正在运行…"));
-	if (failure !== undefined) {
-		nodes.push(el("div", "error-line", failureText(failure.reason)));
+	if (errorCard !== undefined) nodes.push(errorCard); // 锚点不在窗口内时的兜底：流末尾
+	if (failure?.reason === "aborted") {
+		nodes.push(el("div", "error-line", failureText("aborted")));
 	}
 	if (canLoadEarlier()) {
 		const button = el("button", "load-earlier", "加载更早") as HTMLButtonElement;
@@ -670,20 +746,138 @@ function formatTime(createdAt?: number): string {
 	return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-/** 运行结束（无回答）的提示文案。 */
+/** 运行结束（无回答）的提示文案（用户主动停止用：错误卡片只负责非停止的失败）。 */
 function failureText(reason?: string): string {
 	switch (reason) {
 		case "aborted":
 			return "已停止本次运行，已生成的部分已保留。";
-		case "model_error":
-			return "本次运行未能完成（模型请求失败）。";
-		case "no_model":
-			return "本次运行未能完成（未配置可用模型）。";
-		case "turn_limit":
-			return "本次运行未能完成（达到工具轮次上限）。";
 		default:
-			return `本次运行未能完成（${reason ?? "未知原因"}）。`;
+			return failureCardText(reason, undefined);
 	}
+}
+
+/** 错误卡片文案：中文原因包裹底层错误（runFailure.detail，如模型返回的错误文本）。 */
+function failureCardText(reason?: string, detail?: string): string {
+	let base: string;
+	switch (reason) {
+		case "model_error":
+			base = "本次回答失败：模型请求出错";
+			break;
+		case "no_model":
+			base = "本次回答失败：没有可用的模型";
+			break;
+		case "faulted":
+			base = "本次回答失败：运行内部出错";
+			break;
+		case "interrupted":
+			base = "本次回答失败：服务中断时回答未完成";
+			break;
+		case "restart_limit":
+			base = "本次回答失败：重启后无法继续运行";
+			break;
+		case "orphaned":
+			base = "本次回答失败：所属任务已丢失";
+			break;
+		case "turn_limit":
+			base = "本次回答失败：工具调用轮次达到上限";
+			break;
+		case "nothing_to_answer":
+			base = "本次没有需要回答的内容";
+			break;
+		default:
+			base = `本次回答失败（原因：${reason ?? "未知"}）`;
+	}
+	const tail = detail !== undefined && detail.trim().length > 0 ? `，底层错误：${detail}` : "。";
+	return base + tail;
+}
+
+// —— 排队（pi.inbox）与错误卡片 ——
+
+/** 是否为用户输入型排队项（本端只发 input；write 型排队项不识别也不显示）。 */
+function isQueuedInput(item: InboxItemView): boolean {
+	return item.content !== undefined;
+}
+
+/** 排队项的用户消息文本。 */
+function inboxText(item: InboxItemView): string {
+	return typeof item.content === "string" ? item.content : extractTextOf(item.content ?? []);
+}
+
+/** 排队中的提交 → 「等待中」用户气泡（真实 pi.user 条目在放置后才出现，这只是预告）。 */
+function renderQueuedBubble(item: InboxItemView): HTMLElement {
+	const wrap = el("div", "msg user queued", inboxText(item));
+	wrap.append(el("span", "queued-tag", "等待中"));
+	return wrap;
+}
+
+/**
+ * 排队消息对账：发送时运行中的消息记入 state.queuedSent；随 view 对账——仍在 inbox
+ * 或已出现为 transcript 条目的移出记录，剩下的视为已随停止撤回，横幅提示一次。
+ * pi-durable 语义：abort 撤回排队输入（inbar 清空、不留条目）；正常流程里放置与
+ * 出条目同一 commit（同一份全量 view），不会误报。提示基于文本匹配，刷新后记录
+ * 即丢失（仅在内存），不遮晚真实状态。
+ */
+function reconcileQueuedSent(entries: readonly ChatEntry[], inbox: readonly InboxItemView[], busy: boolean): void {
+	if (state.queuedSent.length === 0) return;
+	const placed = new Set(
+		entries.filter((entry) => entry.kind === "pi.user").map((entry) => extractText(entry.model?.[0])),
+	);
+	const queued = new Set(inbox.map(inboxText));
+	const still: string[] = [];
+	const withdrawn: string[] = [];
+	for (const text of state.queuedSent) {
+		if (queued.has(text)) still.push(text);
+		else if (!placed.has(text)) withdrawn.push(text);
+	}
+	state.queuedSent = still;
+	if (!busy && withdrawn.length > 0) {
+		const preview = withdrawn.map((text) => `「${text.length > 20 ? `${text.slice(0, 20)}…` : text}」`).join("、");
+		showBanner(`已停止：排队中的 ${preview} 已撤回，未发送，可重新输入。`);
+	}
+}
+
+/**
+ * 失败运行的落点：runFailure.first 之后的最后一条条目 id（错误卡片锚点，一次运行可含
+ * 多条输入与工具轮次，卡片挂在运行末尾）与该运行最后一条用户消息文本（重试内容）。
+ * 窗口内没有任何条目时返回 undefined。
+ */
+function failurePlacement(
+	entries: readonly ChatEntry[],
+	first: number | undefined,
+): { anchorId: number; retryText: string | undefined } | undefined {
+	let last: ChatEntry | undefined;
+	let lastUser: ChatEntry | undefined;
+	for (const entry of entries) {
+		if (first !== undefined && entry.id < first) continue;
+		last = entry;
+		if (entry.kind === "pi.user") lastUser = entry;
+	}
+	if (last === undefined) return undefined;
+	return {
+		anchorId: last.id,
+		retryText: lastUser === undefined ? undefined : extractText(lastUser.model?.[0]),
+	};
+}
+
+/** 错误卡片：失败原因中文文案（包裹底层错误）+ 重试按钮（以新 requestId 重发该条用户消息）。 */
+function renderErrorCard(failure: NonNullable<LiveDoc["runFailure"]>, content: string | undefined): HTMLElement {
+	const card = el("div", "error-card");
+	card.append(el("div", "error-card-text", failureCardText(failure.reason, failure.detail)));
+	const retry = el("button", "error-card-retry", "重试") as HTMLButtonElement;
+	retry.type = "button";
+	if (content === undefined || content.length === 0) {
+		retry.disabled = true; // 找不到原消息内容（不在窗口内）：无法重试
+		retry.title = "找不到原消息内容，无法重试";
+	} else {
+		retry.addEventListener("click", () => {
+			retry.disabled = true;
+			void retrySubmission(content).finally(() => {
+				retry.disabled = false;
+			});
+		});
+	}
+	card.append(retry);
+	return card;
 }
 
 /** 进行中的回答：流式 partial + “生成中”指示。 */
@@ -709,6 +903,11 @@ function renderEntry(
 		}
 		case "pi.assistant": {
 			const message = entry.model?.[0];
+			// 失败的回答条目（模型请求出错时 pi-durable 保留的 attempt，stopReason "error"）：
+			// 以错误样式呈现底层错误，而非当作正常回答渲染部分文本。
+			if (message?.stopReason === "error") {
+				return el("div", "msg stella failed", message.errorMessage || "（本次回答失败）");
+			}
 			const wrap = el("div", "msg stella");
 			const text = extractText(message);
 			if (text.length > 0) wrap.append(el("span", "text", text));
@@ -861,7 +1060,12 @@ function isToolResult(message: ModelMessage | undefined): message is ToolResultM
 }
 
 function extractText(message: ModelMessage | undefined): string {
-	const content = message?.content;
+	if (message === undefined) return "";
+	return extractTextOf(message.content);
+}
+
+/** 消息内容（string 或内容块数组）→ 文本（拼接全部 text 块）。 */
+function extractTextOf(content: string | ContentBlock[]): string {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
 		return content
