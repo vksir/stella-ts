@@ -28,6 +28,19 @@ async function main(): Promise<void> {
 		}
 	});
 
+	// 端口被占用时给出可行动的中文提示，而不是裸 EADDRINUSE 堆栈
+	server.on("error", (err: NodeJS.ErrnoException) => {
+		if (err.code === "EADDRINUSE") {
+			console.error(
+				`[stella] 端口 ${config.port} 已被占用（可能是上一进程未退出）。` +
+					` 可执行 netstat -ano | findstr :${config.port} 找到 PID 后 taskkill /F /PID <PID>，或用 STELLA_PORT 换端口。`,
+			);
+		} else {
+			console.error("[stella] HTTP 服务出错：", err);
+		}
+		process.exit(1);
+	});
+
 	// harness 因存储错误自关时退出进程，交给进程管理器重启（README「Errors」）
 	void stella.harness.closed.then((end) => {
 		if (end.kind === "failed") {
