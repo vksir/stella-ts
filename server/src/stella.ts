@@ -29,6 +29,10 @@ export interface Stella {
 	readonly config: StellaConfig;
 	readonly harness: Harness;
 	readonly defaultModel: ResolvedDefaultModel;
+	/** pi-ai 模型目录：已装 provider 及其模型（模型列表端点与切换校验用）。 */
+	readonly models: MutableModels;
+	/** 已装 provider 名（装载顺序，与映射表一致）；模型目录按它排序。 */
+	readonly registeredProviders: readonly string[];
 	/** faux 模式下的句柄：测试脚本用它固定模型回答。 */
 	readonly faux: ReturnType<typeof installFauxProvider> | undefined;
 	close(): Promise<void>;
@@ -40,6 +44,11 @@ export interface CreateStellaOptions {
 	 * 覆盖流式 partial 与停止场景；缺省瞬时完成，行为与 T1 一致。
 	 */
 	readonly fauxTokensPerSecond?: number;
+	/**
+	 * faux 模式的自定义模型目录（faux provider 原生支持）。缺省只有 faux-1；
+	 * 模型切换测试传多个模型定义，才能验证「切换后下一条回答用新模型」。
+	 */
+	readonly fauxModels?: readonly { readonly id: string; readonly name?: string }[];
 }
 
 export async function createStella(
@@ -55,10 +64,12 @@ export async function createStella(
 	let faux: ReturnType<typeof installFauxProvider> | undefined;
 	let registeredProviders: string[];
 	if (config.faux) {
-		faux = installFauxProvider(
-			models,
-			options.fauxTokensPerSecond !== undefined ? { tokensPerSecond: options.fauxTokensPerSecond } : undefined,
-		);
+		faux = installFauxProvider(models, {
+			...(options.fauxTokensPerSecond !== undefined
+				? { tokensPerSecond: options.fauxTokensPerSecond }
+				: {}),
+			...(options.fauxModels !== undefined ? { fauxModels: options.fauxModels } : {}),
+		});
 		registeredProviders = ["faux"];
 	} else {
 		registeredProviders = discoverProviders(models, env);
@@ -78,7 +89,7 @@ export async function createStella(
 	const defaultModel = resolveDefaultModel(models, spec, registeredProviders);
 	if (defaultModel.fallbackFrom !== undefined) {
 		console.warn(
-			`[stella] 默认模型 ${spec.provider}/${defaultModel.fallbackFrom} 不在 provider 目录中，` +
+			`[stella] 配置的默认模型 ${defaultModel.fallbackFrom} 不可用（provider 未装或模型不在目录），` +
 				`已改用 ${defaultModel.provider}/${defaultModel.modelId}。` +
 				`如需指定，请设置 STELLA_DEFAULT_MODEL（provider/modelId）。`,
 		);
@@ -103,6 +114,8 @@ export async function createStella(
 		config,
 		harness,
 		defaultModel,
+		models,
+		registeredProviders,
 		faux,
 		close: () => harness.close(BACKGROUND_CONTEXT).then(() => undefined),
 	};

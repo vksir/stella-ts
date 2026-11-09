@@ -443,6 +443,70 @@ body {
 	font-size: 12px;
 }
 
+/* —— 模型切换（与工作目录同区同风格）—— */
+
+#model-label {
+	color: var(--muted);
+	font-size: 12px;
+}
+
+#model-row {
+	display: flex;
+	gap: 6px;
+}
+
+#model-select {
+	flex: 1;
+	min-width: 0;
+	background: var(--panel);
+	color: var(--text);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 6px 8px;
+	font-size: 12px;
+}
+
+#model-select:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+#model-select:disabled {
+	opacity: 0.5;
+}
+
+/* 星标：默认空心淡色，收藏后金色实心 */
+#toggle-favorite {
+	width: 32px;
+	flex: none;
+	background: transparent;
+	color: var(--muted);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	font-size: 14px;
+	cursor: pointer;
+}
+
+#toggle-favorite:hover {
+	border-color: var(--accent);
+}
+
+#toggle-favorite.fav-on {
+	color: #eab308;
+	border-color: #eab308;
+}
+
+#toggle-favorite:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+#model-hint {
+	color: var(--muted);
+	font-size: 11px;
+	min-height: 1em;
+}
+
 #workspace-dir {
 	background: var(--panel);
 	color: var(--text);

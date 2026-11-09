@@ -19,6 +19,12 @@
 					<ul id="conversation-list"></ul>
 					<div id="conversation-settings">
 						<div class="settings-title">会话设置</div>
+						<label id="model-label" for="model-select">模型</label>
+						<div id="model-row">
+							<select id="model-select" aria-label="当前会话使用的模型"></select>
+							<button id="toggle-favorite" type="button" title="收藏当前模型">☆</button>
+						</div>
+						<div id="model-hint"></div>
 						<label id="workspace-label" for="workspace-dir">工作目录</label>
 						<input
 							id="workspace-dir"

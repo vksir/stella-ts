@@ -1,5 +1,5 @@
 /**
- * Stella 聊天页：会话侧栏（列表/新建/切换/删除 + 工作目录设置）+ 消息流 + 输入框 + 发送/停止，
+ * Stella 聊天页：会话侧栏（列表/新建/切换/删除 + 模型/工作目录设置）+ 消息流 + 输入框 + 发送/停止，
  * EventSource 订阅当前会话的 SSE。
  *
  * 服务端权威：客户端只 POST 当前这条新消息，不带历史；条目全部来自
@@ -10,6 +10,14 @@
  * pi.tool-result 条目（按 toolCallId 关联）给出输出全文；运行中的调用来自
  * docs["pi.live"].tools 槽位（状态：排队/运行中，输出随节流 commit 到达）。
  * 切换会话时关闭旧 EventSource 再重订，避免多个连接并存。
+ *
+ * 模型切换（GLOSSARY「会话」：会话属性含所选模型）：下拉只列已装 provider 的模型，
+ * 按 provider 分组（optgroup）；选中即 PUT /api/conversations/:id/model，服务端
+ * configure({ model }) 写入 pi.agent，立即生效于下一条消息——可从回答条目的
+ * 模型元数据（provider/model）验证。新会话由服务端写入默认模型。
+ * 收藏（GLOSSARY「收藏」）：星标按钮收藏当前会话模型，localStorage 持久化
+ * （键 stella.model-favorites，存 "provider/modelId" 数组），刷新保持；
+ * 收藏项在顶部「★ 收藏」分组置顶，组内按收藏先后，其余组内保持目录顺序。
  */
 
 // —— 服务端数据形状（SSE view / REST 翻页） ——
@@ -82,11 +90,33 @@ interface ConversationSummary {
 	createdAt?: number;
 }
 
-/** GET/PUT 会话设置的响应体：cwd 为当前生效值，defaultWorkspace 为服务端配置的默认工作区。 */
+/** GET/PUT 会话设置的响应体：cwd 为当前生效值，defaultWorkspace 为服务端配置的默认工作区，
+ * model 为会话当前模型（resolved；创建会话时已写入服务端默认模型）。 */
 interface WorkspaceSettings {
 	cwd: string;
 	defaultWorkspace: string;
 	custom: boolean;
+	model: ModelRefPayload | null;
+}
+
+/** 模型引用（provider/modelId），与服务端 ModelRef 同形。 */
+interface ModelRefPayload {
+	provider: string;
+	modelId: string;
+}
+
+/** GET /api/models 的目录条目；带会话查询时当前会话选中的模型带 selected。 */
+interface ModelInfo extends ModelRefPayload {
+	providerName: string;
+	name: string;
+	selected?: boolean;
+}
+
+/** GET /api/models 响应：目录 + 默认模型 + （配置的默认模型不可用时的）回落信息。 */
+interface ModelCatalog {
+	models: ModelInfo[];
+	defaultModel: ModelRefPayload;
+	defaultModelFallback?: { from: string; to: ModelRefPayload };
 }
 
 interface ConversationList {
@@ -120,8 +150,12 @@ const state = {
 	earlier: [] as ChatEntry[],
 	/** 当前会话的 SSE 连接；切换会话时先 close 旧的再重订。 */
 	source: undefined as EventSource | undefined,
-	/** 当前会话的工作目录设置。 */
+	/** 当前会话的设置（工作目录 + 当前模型）。 */
 	workspace: undefined as WorkspaceSettings | undefined,
+	/** 可用模型目录（全局，启动时拉一次）。 */
+	modelCatalog: undefined as ModelCatalog | undefined,
+	/** 收藏的模型（"provider/modelId"，按收藏先后）；localStorage 持久化，刷新保持。 */
+	favorites: [] as string[],
 };
 
 const messagesEl = document.getElementById("messages") as HTMLElement;
@@ -140,6 +174,37 @@ const workspaceInputEl = document.getElementById("workspace-dir") as HTMLInputEl
 const workspaceHintEl = document.getElementById("workspace-hint") as HTMLElement;
 const workspaceSaveEl = document.getElementById("save-workspace") as HTMLButtonElement;
 const workspaceResetEl = document.getElementById("reset-workspace") as HTMLButtonElement;
+const modelSelectEl = document.getElementById("model-select") as HTMLSelectElement;
+const favoriteEl = document.getElementById("toggle-favorite") as HTMLButtonElement;
+const modelHintEl = document.getElementById("model-hint") as HTMLElement;
+
+// —— 收藏：localStorage 持久化（GLOSSARY「收藏」：浏览器本地偏好，排序在列表最前）——
+
+const FAVORITES_KEY = "stella.model-favorites";
+
+/** 模型引用 → localStorage/option value 用的 "provider/modelId" 键。 */
+function modelKey(model: ModelRefPayload): string {
+	return `${model.provider}/${model.modelId}`;
+}
+
+/** 读取收藏列表：写法不合法时静默回退空表（本地偏好坏了不应阻塞页面）。 */
+function loadFavorites(): string[] {
+	try {
+		const raw = localStorage.getItem(FAVORITES_KEY);
+		if (raw === null) return [];
+		const parsed: unknown = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((item): item is string => typeof item === "string");
+	} catch {
+		return [];
+	}
+}
+
+function saveFavorites(favorites: readonly string[]): void {
+	localStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
+}
+
+state.favorites = loadFavorites();
 
 // —— 启动：加载列表，无会话则建一个，然后订阅 ——
 
@@ -147,6 +212,8 @@ void boot();
 
 async function boot(): Promise<void> {
 	try {
+		// 模型目录是全局资源，与会话加载并行拉取；失败不阻塞聊天（下拉显示加载中/失败）
+		void loadModelCatalog().catch(showError);
 		await refreshList();
 		const first = state.conversations[0]?.id;
 		if (first === undefined) {
@@ -185,9 +252,10 @@ function switchTo(id: number): void {
 	renderList();
 	setBusyEnabled();
 	renderWorkspace();
+	renderModelArea();
 	subscribe(id);
 	render();
-	void loadWorkspace(id).catch(showError);
+	void loadSettings(id).catch(showError);
 }
 
 function subscribe(id: number): void {
@@ -221,6 +289,7 @@ async function deleteConversation(id: number): Promise<void> {
 			setConn(false);
 			setBusyEnabled();
 			renderWorkspace();
+			renderModelArea();
 			render();
 		} else {
 			switchTo(next);
@@ -259,13 +328,146 @@ async function submitMessage(content: string): Promise<void> {
 	}
 }
 
-// —— 会话设置：工作目录 ——
+// —— 会话设置：模型切换与收藏 ——
 
-/** 拉取当前会话的工作目录设置并填充输入框。 */
-async function loadWorkspace(id: number): Promise<void> {
+/** 拉取可用模型目录（全局，启动时一次；catalog 含默认模型与回落信息）。 */
+async function loadModelCatalog(): Promise<void> {
+	state.modelCatalog = (await fetchJson("/api/models")) as ModelCatalog;
+	renderModelArea();
+}
+
+/** 拉取当前会话的设置（工作目录 + 当前模型）并刷新两个设置块。 */
+async function loadSettings(id: number): Promise<void> {
 	state.workspace = (await fetchJson(`/api/conversations/${id}/settings`)) as WorkspaceSettings;
 	renderWorkspace();
+	renderModelArea();
 }
+
+/** 模型区整体重绘：下拉、星标按钮、提示行。 */
+function renderModelArea(): void {
+	renderModelSelect();
+	updateFavoriteButton();
+	renderModelHint();
+}
+
+/** 按目录重绘下拉：收藏项置顶为「★ 收藏」组，其余按 provider 分组（optgroup），当前模型 selected。 */
+function renderModelSelect(): void {
+	const catalog = state.modelCatalog;
+	const none = state.conversationId === undefined;
+	modelSelectEl.disabled = none || catalog === undefined;
+	favoriteEl.disabled = none || catalog === undefined;
+	if (catalog === undefined) {
+		modelSelectEl.replaceChildren(el("option", "", none ? "" : "加载中…"));
+		return;
+	}
+	const byKey = new Map(catalog.models.map((model) => [modelKey(model), model]));
+	// 收藏过滤到目录里仍存在的（本地偏好可能残留已卸载 provider 的模型）；按收藏先后排序
+	const favoriteKeys = state.favorites.filter((key) => byKey.has(key));
+	const nodes: HTMLOptGroupElement[] = [];
+	if (favoriteKeys.length > 0) {
+		const favoritesGroup = document.createElement("optgroup");
+		favoritesGroup.label = "★ 收藏";
+		for (const key of favoriteKeys) favoritesGroup.append(modelOption(byKey.get(key)!));
+		nodes.push(favoritesGroup);
+	}
+	// 其余按目录顺序分组：provider 连续段一个 optgroup（目录已按装载顺序生成），跳过已收藏项
+	let group: HTMLOptGroupElement | undefined;
+	let lastProvider: string | undefined;
+	for (const model of catalog.models) {
+		if (favoriteKeys.includes(modelKey(model))) continue;
+		if (group === undefined || lastProvider !== model.provider) {
+			lastProvider = model.provider;
+			group = document.createElement("optgroup");
+			group.label = model.providerName;
+			nodes.push(group);
+		}
+		group.append(modelOption(model));
+	}
+	modelSelectEl.replaceChildren(...nodes);
+	selectCurrentModel();
+}
+
+/** 目录条目 → option：value 是 "provider/modelId"，文本是模型显示名。 */
+function modelOption(model: ModelInfo): HTMLOptionElement {
+	const option = document.createElement("option");
+	option.value = modelKey(model);
+	option.textContent = model.name;
+	return option;
+}
+
+/** 选中当前会话的模型（浏览器对 selected 项高亮；收起状态显示的就是它）。 */
+function selectCurrentModel(): void {
+	const model = state.workspace?.model ?? null;
+	const key = model === null ? "" : modelKey(model);
+	for (const option of Array.from(modelSelectEl.options)) {
+		option.selected = option.value === key;
+	}
+}
+
+/** 星标按钮反映当前会话模型是否已收藏：空心☆可收藏，实心★可取消。 */
+function updateFavoriteButton(): void {
+	const model = state.workspace?.model;
+	const isFavorite = model != null && state.favorites.includes(modelKey(model));
+	favoriteEl.textContent = isFavorite ? "★" : "☆";
+	favoriteEl.title = isFavorite ? "取消收藏当前模型" : "收藏当前模型";
+	favoriteEl.classList.toggle("fav-on", isFavorite);
+}
+
+/** 提示行：默认模型回落提示（若有）+ 当前模型与生效时机。 */
+function renderModelHint(): void {
+	const lines: string[] = [];
+	const fallback = state.modelCatalog?.defaultModelFallback;
+	if (fallback !== undefined) {
+		lines.push(`配置的默认模型 ${fallback.from} 不可用（provider 未装），已改用 ${displayNameOf(fallback.to)}。`);
+	}
+	const model = state.workspace?.model;
+	if (model != null) lines.push(`当前模型：${displayNameOf(model)}，切换对下一条消息立即生效。`);
+	modelHintEl.textContent = lines.join(" ");
+}
+
+/** 模型引用 → 展示名：目录里有则用「name（provider 显示名）」，没有则退回原始写法。 */
+function displayNameOf(model: ModelRefPayload): string {
+	const info = state.modelCatalog?.models.find(
+		(item) => item.provider === model.provider && item.modelId === model.modelId,
+	);
+	return info !== undefined ? `${info.name}（${info.providerName}）` : modelKey(model);
+}
+
+/** 下拉选中即切换：PUT model 后服务端 configure({ model }) 写入 pi.agent，对下一条消息生效。 */
+async function switchModel(key: string): Promise<void> {
+	if (state.conversationId === undefined) return;
+	const slash = key.indexOf("/");
+	if (slash <= 0) return;
+	const provider = key.slice(0, slash);
+	const modelId = key.slice(slash + 1);
+	try {
+		const result = (await fetchJson(`/api/conversations/${state.conversationId}/model`, {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ provider, modelId }),
+		})) as { model: ModelRefPayload | null };
+		if (state.workspace !== undefined) state.workspace.model = result.model;
+		if (result.model !== null) {
+			showBanner(`模型已切换：${displayNameOf(result.model)}，对下一条消息生效。`);
+		}
+	} finally {
+		renderModelArea(); // 失败时也回滚显示为会话实际模型
+	}
+}
+
+/** 星标：收藏/取消收藏当前会话模型，localStorage 持久化并重绘下拉（收藏组置顶）。 */
+function toggleFavorite(): void {
+	const model = state.workspace?.model;
+	if (model == null) return;
+	const key = modelKey(model);
+	const wasFavorite = state.favorites.includes(key);
+	state.favorites = wasFavorite ? state.favorites.filter((item) => item !== key) : [...state.favorites, key];
+	saveFavorites(state.favorites);
+	showBanner(wasFavorite ? `已取消收藏 ${displayNameOf(model)}` : `已收藏 ${displayNameOf(model)}，排在列表最前`);
+	renderModelArea();
+}
+
+// —— 会话设置：工作目录 ——
 
 /** 将工作目录设置反映到设置区（输入框 + 提示行）。 */
 function renderWorkspace(): void {
@@ -741,6 +943,10 @@ stopEl.addEventListener("click", () => void stopRun());
 newEl.addEventListener("click", () => void createConversation().catch(showError));
 workspaceSaveEl.addEventListener("click", () => void saveWorkspace().catch(showError));
 workspaceResetEl.addEventListener("click", () => void resetWorkspace().catch(showError));
+modelSelectEl.addEventListener("change", () => {
+	void switchModel(modelSelectEl.value).catch(showError);
+});
+favoriteEl.addEventListener("click", toggleFavorite);
 workspaceInputEl.addEventListener("keydown", (e) => {
 	if (e.key === "Enter") {
 		e.preventDefault();
