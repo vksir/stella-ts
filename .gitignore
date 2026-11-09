@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Stella 运行时数据：SQLite 数据库与默认工作区
+data/

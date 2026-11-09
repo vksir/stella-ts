@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Stella</title>
+		<link rel="stylesheet" href="/src/style.css" />
+	</head>
+	<body>
+		<div id="app">
+			<header id="topbar">
+				<span class="brand">Stella</span>
+				<span class="sub">万用日常型助手</span>
+				<span id="conn" class="conn conn-offline" title="未连接">未连接</span>
+			</header>
+			<div id="layout">
+				<aside id="sidebar">
+					<button id="new-conversation" type="button">＋ 新会话</button>
+					<ul id="conversation-list"></ul>
+				</aside>
+				<section id="chat">
+					<main id="messages" aria-live="polite"></main>
+					<div id="banner" hidden></div>
+					<footer id="composer">
+						<textarea
+							id="input"
+							rows="2"
+							placeholder="给 Stella 发消息…（Enter 发送，Shift+Enter 换行）"
+						></textarea>
+						<button id="stop" type="button" hidden>停止</button>
+						<button id="send" type="button">发送</button>
+					</footer>
+				</section>
+			</div>
+		</div>
+		<!-- 删除确认弹层 -->
+		<div id="confirm" hidden>
+			<div id="confirm-card" role="dialog" aria-modal="true" aria-labelledby="confirm-text">
+				<p id="confirm-text"></p>
+				<div id="confirm-actions">
+					<button id="confirm-cancel" type="button">取消</button>
+					<button id="confirm-delete" type="button">删除</button>
+				</div>
+			</div>
+		</div>
+		<script type="module" src="/src/main.ts"></script>
+	</body>
+</html>
