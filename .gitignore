@@ -154,3 +154,6 @@ data/
 # 样式检查临时产物（截图、Chrome profile）
 shots/
 .taste-skill/
+
+# 本地工作区（议题/草稿/参照物，不入库）
+.scratch/
