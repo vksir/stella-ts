@@ -1,17 +1,21 @@
 /**
  * Stella 聊天页（DSH Web UI 结构复刻）：AppFrame 两列外壳 + 会话侧栏 + 消息流 + 胶囊 composer。
  *
- * 与服务端的契约与旧版完全一致：
+ * 与服务端的契约：
  * - 服务端权威：客户端只 POST 当前这条新消息；条目全部来自 SSE 推送的 watch view
- *   （初始 view + 每次 commit 后的新 view），GET entries?before= 向前翻页。
+ *   （初始 view + 每次 commit 后的新 view）。view 的 entries 只是窗口，客户端由
+ *   Transcript 累加成整段转写；断线重连用 ?from=（已持有最新条目 + 1），缺口显式补页。
  * - 流式回答：docs["pi.live"].generation.message 的 partial（约 100ms 一次 commit），
  *   回答条目落定（id ≥ run.first）后 partial 让位。
  * - 工具调用：assistant 条目的 toolCall 块（id）↔ pi.tool-result 条目（toolCallId）
  *   ↔ 运行中的 pi.live.tools 槽位，渲染为 24px 折叠行（展开看参数与输出）。
- * - 排队：运行中发送以 follow-up 进 docs["pi.inbox"]，渲染为「等待中」气泡；
- *   停止会撤回排队输入——state.queuedSent 随 view 对账并 toast 提示。
- * - 失败：runFailure（reason/detail/first）在失败运行末尾渲染错误行 + 重试
- *   （新 requestId 重发同一条用户消息）。
+ * - 排队/插话：运行中发送默认 follow-up，进 composer 上方的队列条（逐项插话/编辑/删除）；
+ *   Ctrl/Cmd+Enter 用另一种投递方式；停止会撤回排队输入并 toast。
+ * - 失败：runFailure 在失败运行末尾渲染错误行 + 「续跑」（POST {continue:true}），
+ *   不重复用户消息。
+ * - /compact [说明]：composer 指令，调用手动压缩端点，不作为消息发送。
+ * - 预设：新会话选择器（>1 个时）+ composer 只读 chip；能力在创建时写入 pi.agent。
+ * - 上下文/花费：composer 下方的小环 + 累计 token/成本，点开看系统/工具/消息分解。
  * - 会话设置：模型切换（PUT /model）与工作目录（PUT /settings）收进 composer 工具行
  *   （模型 chip + 工作目录 chip），与 DSH InputBar 布局一致。
  *
@@ -21,6 +25,7 @@
  */
 
 import { renderMarkdown } from "./markdown";
+import { Transcript } from "./transcript.js";
 
 // —— 服务端数据形状（SSE view / REST 翻页） ——
 
@@ -91,7 +96,12 @@ interface SseView {
 	conversation: { id: number };
 	entries: ChatEntry[];
 	before?: number;
-	docs: { "pi.live"?: LiveDoc; "pi.inbox"?: { items?: InboxItemView[] } };
+	docs: {
+		"pi.live"?: LiveDoc;
+		"pi.inbox"?: { items?: InboxItemView[] };
+		"pi.usage"?: UsageDoc;
+		"pi.agent"?: { model?: ModelRefPayload };
+	};
 }
 
 interface EntriesPage {
@@ -99,10 +109,55 @@ interface EntriesPage {
 	hasMore: boolean;
 }
 
+/** pi.usage 的一次用量（pi-ai Usage 的 JSON 形状，取展示需要的字段）。 */
+interface TokenUsage {
+	input?: number;
+	output?: number;
+	cacheRead?: number;
+	cacheWrite?: number;
+	totalTokens?: number;
+	cost?: { total?: number };
+}
+
+/** view.docs["pi.usage"]：按 provider/model 与工具名累计。 */
+interface UsageDoc {
+	models?: Record<string, TokenUsage>;
+	tools?: Record<string, TokenUsage>;
+}
+
+/** GET /api/presets 的条目。 */
+interface PresetSummary {
+	id: string;
+	name: string;
+	description?: string;
+	builtin: boolean;
+	default: boolean;
+	extensions: string[] | null;
+	tools: string[] | null;
+	missing: string[];
+}
+
+interface PresetsResponse {
+	presets: PresetSummary[];
+	defaultPreset: string;
+	defaultMaxTurns: number;
+}
+
+/** GET /api/conversations/:id/context：上下文占用。 */
+interface ContextOccupancy {
+	usedTokens: number;
+	windowTokens: number | null;
+	percent: number | null;
+	breakdown: { system: number; tools: number; messages: number };
+	model: ModelRefPayload | null;
+	estimated: boolean;
+}
+
 interface ConversationSummary {
 	id: number;
 	title: string | null;
 	createdAt?: number;
+	preset?: string | null;
 }
 
 /** GET/PUT 会话设置的响应体：cwd 为当前生效值，defaultWorkspace 为服务端默认工作区。 */
@@ -111,6 +166,7 @@ interface WorkspaceSettings {
 	defaultWorkspace: string;
 	custom: boolean;
 	model: ModelRefPayload | null;
+	preset: string | null;
 }
 
 /** 模型引用（provider/modelId），与服务端 ModelRef 同形。 */
@@ -157,16 +213,23 @@ const state = {
 	conversations: [] as ConversationSummary[],
 	conversationId: undefined as number | undefined,
 	view: null as SseView | null,
-	/** 视图窗口之外的更早条目（升序）。 */
-	earlier: [] as ChatEntry[],
 	/** 当前会话的 SSE 连接；切换会话时先 close 旧的再重订。 */
 	source: undefined as EventSource | undefined,
 	workspace: undefined as WorkspaceSettings | undefined,
+	/** 可用预设（启动时拉一次，配置文件热更新后重新拉）。 */
+	presets: [] as PresetSummary[],
+	defaultPreset: "standard",
+	/** 当前会话的预设 id（只用于显示；能力在创建时已写入 pi.agent）。 */
+	preset: null as string | null,
+	/** 上下文占用（独立端点，按最新条目/模型去抖刷新）。 */
+	context: null as ContextOccupancy | null,
+	/** 当前上下文缓存键：最新条目 + 模型。 */
+	contextKey: "",
+	/** busy 时 Enter 的默认投递方式（queue/steer），localStorage 持久化。 */
+	busyEnter: loadBusyEnter(),
 	modelCatalog: undefined as ModelCatalog | undefined,
 	/** 收藏的模型（"provider/modelId"，按收藏先后）；localStorage 持久化。 */
 	favorites: [] as string[],
-	/** 发送时处于运行中（排队）的消息文本（内存）：用于停止撤回后的提示对账。 */
-	queuedSent: [] as string[],
 };
 
 // —— DOM ——
@@ -179,6 +242,10 @@ const sidebarOpenEl = document.getElementById("sidebar-open") as HTMLButtonEleme
 const menuToggleEl = document.getElementById("menu-toggle") as HTMLButtonElement;
 const drawerMaskEl = document.getElementById("drawer-mask") as HTMLElement;
 const newEl = document.getElementById("new-conversation") as HTMLButtonElement;
+const presetPickerEl = document.getElementById("preset-picker") as HTMLElement;
+const presetChipEl = document.getElementById("preset-chip") as HTMLElement;
+const queueDockEl = document.getElementById("queue-dock") as HTMLElement;
+const usageMeterEl = document.getElementById("usage-meter") as HTMLElement;
 const listEl = document.getElementById("conversation-list") as HTMLElement;
 const connEl = document.getElementById("conn") as HTMLElement;
 const themeToggleEl = document.getElementById("theme-toggle") as HTMLButtonElement;
@@ -207,6 +274,12 @@ const confirmTextEl = document.getElementById("confirm-text") as HTMLElement;
 const confirmDeleteEl = document.getElementById("confirm-delete") as HTMLButtonElement;
 const confirmCancelEl = document.getElementById("confirm-cancel") as HTMLButtonElement;
 const bannerEl = document.getElementById("banner") as HTMLElement;
+
+/** 当前会话的客户端转写：窗口合并、缺口标记、向前翻页（切换会话时 reset）。 */
+const transcript = new Transcript<ChatEntry>({
+	before: (oldestId) => fetchEntries({ before: oldestId }),
+	between: (afterId, upToId) => fetchEntries({ after: afterId, upTo: upToId }),
+});
 
 // —— 图标 ——
 
@@ -468,8 +541,9 @@ void boot();
 
 async function boot(): Promise<void> {
 	try {
-		// 模型目录是全局资源，与会话加载并行拉取；失败不阻塞聊天
+		// 模型目录与预设是全局资源，与会话加载并行拉取；失败不阻塞聊天
 		void loadModelCatalog().catch(showError);
+		void loadPresets().catch(showError);
 		await refreshList();
 		const first = state.conversations[0]?.id;
 		if (first === undefined) {
@@ -489,12 +563,83 @@ async function refreshList(): Promise<void> {
 	renderList();
 }
 
-/** 新建会话：POST 后刷新列表并切换过去，输入框聚焦、空白消息流。 */
+/** 新建会话：按侧栏选中的预设 POST，刷新列表并切换过去，输入框聚焦、空白消息流。 */
 async function createConversation(): Promise<void> {
-	const created = (await fetchJson("/api/conversations", { method: "POST" })) as { id: number };
+	// 配置文件热更新后，新会话要拿到最新预设；15s 内不重复拉。
+	if (Date.now() - presetsLoadedAt > 15_000) await loadPresets().catch(() => undefined);
+	const select = presetPickerEl.querySelector("select");
+	const preset = select?.value ?? state.defaultPreset;
+	const created = (await fetchJson("/api/conversations", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(preset.length > 0 ? { preset } : {}),
+	})) as { id: number };
 	await refreshList();
 	switchTo(created.id);
 	inputEl.focus();
+}
+
+/** 拉取预设列表（内置 + 配置文件），填充新会话选择器与只读 chip。 */
+async function loadPresets(): Promise<void> {
+	const response = (await fetchJson("/api/presets")) as PresetsResponse;
+	state.presets = response.presets;
+	state.defaultPreset = response.defaultPreset;
+	presetsLoadedAt = Date.now();
+	renderPresetPicker();
+	renderPresetChip();
+}
+
+function lastPreset(): string {
+	try {
+		return localStorage.getItem(PRESET_KEY) ?? state.defaultPreset;
+	} catch {
+		return state.defaultPreset;
+	}
+}
+
+/** 新会话预设选择器：只有一个预设时隐藏（标准模式无需选择）。 */
+function renderPresetPicker(): void {
+	if (state.presets.length <= 1) {
+		presetPickerEl.hidden = true;
+		presetPickerEl.replaceChildren();
+		return;
+	}
+	presetPickerEl.hidden = false;
+	const label = el("label", "preset-label", "预设");
+	label.setAttribute("for", "preset-select");
+	const select = document.createElement("select");
+	select.id = "preset-select";
+	select.className = "select preset-select";
+	select.setAttribute("aria-label", "新会话预设");
+	const preferred = lastPreset();
+	for (const preset of state.presets) {
+		const option = document.createElement("option");
+		option.value = preset.id;
+		option.textContent = preset.name;
+		if (preset.description !== undefined) option.title = preset.description;
+		if (preset.id === preferred) option.selected = true;
+		select.append(option);
+	}
+	select.addEventListener("change", () => {
+		try {
+			localStorage.setItem(PRESET_KEY, select.value);
+		} catch {
+			// 仅本次生效
+		}
+	});
+	presetPickerEl.replaceChildren(label, select);
+}
+
+/** composer 工具行的只读预设 chip（能力在创建时已写入 pi.agent，运行中不可换）。 */
+function renderPresetChip(): void {
+	if (state.conversationId === undefined || state.preset === null) {
+		presetChipEl.hidden = true;
+		return;
+	}
+	const preset = state.presets.find((item) => item.id === state.preset);
+	presetChipEl.hidden = false;
+	presetChipEl.textContent = preset?.name ?? state.preset;
+	presetChipEl.title = preset?.description ?? `预设：${state.preset}`;
 }
 
 /** 切换会话：重置消息状态、关闭旧 EventSource 后重订 SSE，并拉取会话设置。 */
@@ -503,9 +648,12 @@ function switchTo(id: number): void {
 	state.source = undefined;
 	state.conversationId = id;
 	state.view = null;
-	state.earlier = [];
+	transcript.reset();
+	state.context = null;
+	state.contextKey = "";
+	state.preset = null;
 	state.workspace = undefined;
-	state.queuedSent = []; // 撤回提示只针对当前会话，切换即弃
+	usageOpen = false;
 	setWorkspacePop(false);
 	renderList();
 	setBusyEnabled();
@@ -517,16 +665,39 @@ function switchTo(id: number): void {
 }
 
 function subscribe(id: number): void {
-	const source = new EventSource(`/api/conversations/${id}/events`);
+	connect(id);
+}
+
+/**
+ * 建立（或断线后重建）SSE 连接。重连时带上 `from`（客户端已持有的最新条目 + 1，即
+ * pi-durable `ConversationTranscript.resume`）：服务端只补断线期间的新条目；窗口装不下时
+ * 回落到最新窗口，中间的缺口由转写标出并补页。EventSource 的自动重连无法改 URL，
+ * 所以这里主动关闭并按需重建。
+ */
+function connect(id: number): void {
+	const newest = transcript.newest;
+	const query = newest === undefined ? "" : `?from=${newest + 1}`;
+	const source = new EventSource(`/api/conversations/${id}/events${query}`);
 	source.addEventListener("view", (e) => {
 		const view = JSON.parse((e as MessageEvent<string>).data) as SseView;
 		if (view.conversation.id !== state.conversationId) return; // 旧连接的迟到事件，忽略
 		state.view = view;
+		transcript.merge(view); // 窗口之外的部分由转写保留；窗口不接续时记缺口
 		setConn(true);
 		render();
+		scheduleContextRefresh(id);
 	});
 	source.addEventListener("ping", () => setConn(true));
-	source.onerror = () => setConn(false); // EventSource 自动重连
+	source.onerror = () => {
+		setConn(false);
+		if (state.source !== source) return;
+		source.close();
+		state.source = undefined;
+		if (state.conversationId !== id) return;
+		window.setTimeout(() => {
+			if (state.conversationId === id && state.source === undefined) connect(id);
+		}, 1000);
+	};
 	state.source = source;
 }
 
@@ -542,7 +713,10 @@ async function deleteConversation(id: number): Promise<void> {
 			state.source = undefined;
 			state.conversationId = undefined;
 			state.view = null;
-			state.earlier = [];
+			transcript.reset();
+			state.context = null;
+			state.contextKey = "";
+			state.preset = null;
 			state.workspace = undefined;
 			setConn(false);
 			setBusyEnabled();
@@ -557,47 +731,105 @@ async function deleteConversation(id: number): Promise<void> {
 
 // —— 发送：只发当前这条新消息 ——
 
-function send(): void {
+function send(gesture: "primary" | "alternate" = "primary"): void {
 	const content = inputEl.value.trim();
 	if (content.length === 0 || state.conversationId === undefined || inputEl.disabled) return;
-	void submitMessage(content);
+	void submitMessage(content, gesture);
 }
 
 function newRequestId(): string {
 	return crypto.randomUUID();
 }
 
-async function submitMessage(content: string): Promise<void> {
-	const busy = state.view?.docs["pi.live"]?.run != null; // 发送时在运行：本次提交会排队
-	if (busy) state.queuedSent = [...state.queuedSent, content];
-	await submitWithRequest(content, newRequestId());
+/** `/compact [说明]`：手动压缩，不作为用户消息发送。 */
+function readCompactCommand(content: string): { instructions?: string } | undefined {
+	const match = /^\/compact(?:\s+([\s\S]*))?$/.exec(content);
+	if (match === null) return undefined;
+	const instructions = match[1]?.trim();
+	return instructions === undefined || instructions.length === 0 ? {} : { instructions };
 }
 
-/** 重试：以新 requestId 重新提交失败的那条用户消息。 */
-async function retrySubmission(content: string): Promise<void> {
+async function submitMessage(content: string, gesture: "primary" | "alternate"): Promise<void> {
+	const compact = readCompactCommand(content);
+	if (compact !== undefined) {
+		await runCompact(compact.instructions);
+		return;
+	}
 	const busy = state.view?.docs["pi.live"]?.run != null;
-	if (busy) state.queuedSent = [...state.queuedSent, content];
-	await submitWithRequest(content, newRequestId());
+	const whenBusy = busy ? modeForGesture(gesture) : undefined;
+	await submitWithRequest(content, newRequestId(), whenBusy);
 }
 
-async function submitWithRequest(content: string, requestId: string): Promise<void> {
+/** 续跑：失败后不新增用户消息，让模型接着回答停住的上下文。 */
+async function retryContinue(): Promise<void> {
 	sendEl.disabled = true;
 	try {
 		const response = await fetch(`/api/conversations/${state.conversationId}/messages`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ content, requestId }),
+			body: JSON.stringify({ continue: true }),
+		});
+		if (!response.ok) {
+			const body = (await response.json().catch(() => ({}))) as { error?: string };
+			showBanner(body.error ?? `续跑失败（${response.status}）`);
+		}
+	} catch (error) {
+		showError(error);
+	} finally {
+		sendEl.disabled = state.conversationId === undefined;
+	}
+}
+
+async function runCompact(instructions: string | undefined): Promise<void> {
+	sendEl.disabled = true;
+	try {
+		const response = await fetch(`/api/conversations/${state.conversationId}/compact`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(instructions === undefined ? {} : { instructions }),
+		});
+		if (!response.ok) {
+			const body = (await response.json().catch(() => ({}))) as { error?: string };
+			showBanner(body.error ?? `压缩失败（${response.status}）`);
+			return;
+		}
+		inputEl.value = "";
+		autosizeInput();
+		showBanner("已提交压缩，摘要将在下一个轮次边界落位");
+	} catch (error) {
+		showError(error);
+	} finally {
+		sendEl.disabled = state.conversationId === undefined;
+	}
+}
+
+async function submitWithRequest(
+	content: string,
+	requestId: string,
+	whenBusy?: "steer" | "followUp",
+	options?: { readonly clearInput?: boolean },
+): Promise<boolean> {
+	sendEl.disabled = true;
+	try {
+		const response = await fetch(`/api/conversations/${state.conversationId}/messages`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ content, requestId, ...(whenBusy === undefined ? {} : { whenBusy }) }),
 		});
 		if (!response.ok) {
 			const body = (await response.json().catch(() => ({}))) as { error?: string };
 			showBanner(body.error ?? `发送失败（${response.status}）`);
-		} else {
+			return false;
+		}
+		if (options?.clearInput !== false) {
 			inputEl.value = "";
 			autosizeInput();
-			void refreshList().catch(() => undefined); // 首条消息更新了会话标题，刷新侧栏
 		}
+		void refreshList().catch(() => undefined); // 首条消息更新了会话标题，刷新侧栏
+		return true;
 	} catch (error) {
 		showBanner(error instanceof Error ? error.message : String(error));
+		return false;
 	} finally {
 		sendEl.disabled = state.conversationId === undefined;
 		inputEl.focus();
@@ -619,7 +851,11 @@ async function loadModelCatalog(): Promise<void> {
 }
 
 async function loadSettings(id: number): Promise<void> {
-	state.workspace = (await fetchJson(`/api/conversations/${id}/settings`)) as WorkspaceSettings;
+	const settings = (await fetchJson(`/api/conversations/${id}/settings`)) as WorkspaceSettings;
+	if (state.conversationId !== id) return; // 切换会话后的迟到响应
+	state.workspace = settings;
+	state.preset = settings.preset ?? null;
+	renderPresetChip();
 	renderWorkspace();
 	renderModelArea();
 }
@@ -799,7 +1035,9 @@ async function resetWorkspace(): Promise<void> {
 // —— 渲染 ——
 
 function render(): void {
-	const entries = [...state.earlier, ...(state.view?.entries ?? [])];
+	// 渲染数据源是客户端转写（窗口 + 已翻页 + 缺口标记），不是单个 view 的窗口
+	const items = transcript.items;
+	const entries = items.flatMap((item) => (item.kind === "entry" ? [item.entry] : []));
 	const live = state.view?.docs["pi.live"];
 	const inbox = (state.view?.docs["pi.inbox"]?.items ?? []).filter(isQueuedInput);
 	const run = live?.run ?? undefined;
@@ -812,9 +1050,6 @@ function render(): void {
 		runFirst !== undefined &&
 		entries.some((entry) => entry.kind === "pi.assistant" && entry.id >= runFirst);
 	const streaming = busy && partial !== undefined && !answerCommitted;
-
-	// 排队消息对账：已随停止撤回的提示（见模块头注释）
-	reconcileQueuedSent(entries, inbox, busy);
 
 	const column = document.createElement("div");
 	column.className = "column";
@@ -854,16 +1089,21 @@ function render(): void {
 	let errorCard: HTMLElement | undefined;
 	let errorAnchorId: number | undefined;
 	if (failure !== undefined && failure.reason !== "aborted") {
-		const placement = failurePlacement(entries, failure.first);
-		if (placement !== undefined) {
-			errorAnchorId = placement.anchorId;
-			errorCard = renderErrorCard(failure, placement.retryText);
+		const anchorId = failurePlacement(entries, failure.first);
+		if (anchorId !== undefined) {
+			errorAnchorId = anchorId;
+			errorCard = renderErrorCard(failure);
 		}
 	}
 
 	const renderedCalls = new Set<string>();
 	const flowNodes: HTMLElement[] = [];
-	for (const entry of entries) {
+	for (const item of items) {
+		if (item.kind === "gap") {
+			flowNodes.push(renderGap(item.after, item.upTo)); // 断线或窗口跳跃造成的缺失段
+			continue;
+		}
+		const entry = item.entry;
 		const node = renderEntry(entry, toolResults, liveSlots, renderedCalls);
 		if (node !== undefined) {
 			flowNodes.push(node);
@@ -881,8 +1121,6 @@ function render(): void {
 			flowNodes.push(wrapFlow(renderToolRow(slotCard(slot, partialToolCall(partial, slot.callId)))));
 		}
 	}
-	// 排队中的提交（pi.inbox）：真实条目放置后才出现，这里只是预告
-	for (const item of inbox) flowNodes.push(renderQueuedBubble(item));
 	if (busy) flowNodes.push(renderRunning());
 	if (errorCard !== undefined) flowNodes.push(errorCard); // 锚点不在窗口内时的兜底：流末尾
 	if (failure?.reason === "aborted") flowNodes.push(renderStoppedLine());
@@ -901,6 +1139,10 @@ function render(): void {
 		column.prepend(wrap);
 	}
 
+	renderQueueDock(inbox);
+	renderSendLabel(busy);
+	renderUsageMeter();
+
 	stopEl.hidden = !busy;
 
 	// 空会话 hero：有会话但无任何内容时，标题 + composer 居中
@@ -912,6 +1154,7 @@ function render(): void {
 			failure === undefined,
 	);
 	renderChatTitle();
+	renderPresetChip();
 
 	const scroller = scrollBodyEl;
 	const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
@@ -1072,75 +1315,179 @@ function inboxText(item: InboxItemView): string {
 	return typeof item.content === "string" ? item.content : extractTextOf(item.content ?? []);
 }
 
-/** 排队中的提交 → 「等待中」用户气泡（真实 pi.user 条目放置后才出现）。 */
-function renderQueuedBubble(item: InboxItemView): HTMLElement {
-	const itemEl = document.createElement("div");
-	itemEl.className = "flow-item msg-user queued";
-	const stack = document.createElement("div");
-	stack.className = "bubble-stack";
-	const bubble = el("div", "bubble", inboxText(item));
-	const tag = el("span", "queued-tag", "等待中");
-	stack.append(bubble, tag);
-	itemEl.append(stack);
-	return itemEl;
-}
+const BUSY_ENTER_KEY = "stella-busy-enter";
+const PRESET_KEY = "stella-preset";
+let presetsLoadedAt = 0;
 
-/**
- * 排队消息对账：发送时运行中的消息记入 state.queuedSent；随 view 对账——仍在 inbox
- * 或已出现为 transcript 条目的移出记录，剩下的视为已随停止撤回，toast 提示一次。
- */
-function reconcileQueuedSent(
-	entries: readonly ChatEntry[],
-	inbox: readonly InboxItemView[],
-	busy: boolean,
-): void {
-	if (state.queuedSent.length === 0) return;
-	const placed = new Set(
-		entries.filter((entry) => entry.kind === "pi.user").map((entry) => extractText(entry.model?.[0])),
-	);
-	const queued = new Set(inbox.map(inboxText));
-	const still: string[] = [];
-	const withdrawn: string[] = [];
-	for (const text of state.queuedSent) {
-		if (queued.has(text)) still.push(text);
-		else if (!placed.has(text)) withdrawn.push(text);
-	}
-	state.queuedSent = still;
-	if (!busy && withdrawn.length > 0) {
-		const preview = withdrawn
-			.map((text) => `「${text.length > 20 ? `${text.slice(0, 20)}…` : text}」`)
-			.join("、");
-		showBanner(`已停止：排队中的 ${preview} 已撤回，未发送，可重新输入。`);
+/** busy 时 Enter 的默认投递方式；Ctrl/Cmd+Enter 用另一种。 */
+function loadBusyEnter(): "queue" | "steer" {
+	try {
+		return localStorage.getItem(BUSY_ENTER_KEY) === "steer" ? "steer" : "queue";
+	} catch {
+		return "queue";
 	}
 }
 
+function setBusyEnter(value: "queue" | "steer"): void {
+	state.busyEnter = value;
+	try {
+		localStorage.setItem(BUSY_ENTER_KEY, value);
+	} catch {
+		// 仅本次生效
+	}
+}
+
+/** 主手势（Enter / 发送按钮）与替代手势（Ctrl/Cmd+Enter）在 busy 时的投递方式。 */
+function modeForGesture(gesture: "primary" | "alternate"): "steer" | "followUp" {
+	const preferred = state.busyEnter === "steer";
+	const steer = gesture === "primary" ? preferred : !preferred;
+	return steer ? "steer" : "followUp";
+}
+
+/** 发送按钮的可读标签：busy 时跟随默认投递方式。 */
+function renderSendLabel(busy: boolean): void {
+	const label = !busy ? "发送" : state.busyEnter === "steer" ? "插话发送" : "排队发送";
+	sendEl.title = busy ? `${label}（Ctrl/Cmd+Enter 用另一种）` : label;
+	sendEl.setAttribute("aria-label", label);
+}
+
+/** 队列条（DSH QueueDock）：运行中排队的提交，逐项 插话/编辑/删除。 */
+function renderQueueDock(inbox: readonly InboxItemView[]): void {
+	if (inbox.length === 0) {
+		queueDockEl.hidden = true;
+		queueDockEl.replaceChildren();
+		return;
+	}
+	queueDockEl.hidden = false;
+	const head = document.createElement("div");
+	head.className = "queue-head";
+	head.append(el("span", "queue-count", `${inbox.length} 条排队消息`));
+	const toggle = el(
+		"button",
+		"queue-setting",
+		state.busyEnter === "queue" ? "Enter：排队" : "Enter：插话",
+	) as HTMLButtonElement;
+	toggle.type = "button";
+	toggle.title = "运行中按 Enter 的投递方式；Ctrl/Cmd+Enter 用另一种";
+	toggle.addEventListener("click", () => {
+		setBusyEnter(state.busyEnter === "queue" ? "steer" : "queue");
+		render();
+	});
+	head.append(toggle);
+
+	const rows = document.createElement("div");
+	rows.className = "queue-rows";
+	for (const item of inbox) rows.append(renderQueueRow(item));
+	queueDockEl.replaceChildren(head, rows);
+}
+
+function renderQueueRow(item: InboxItemView): HTMLElement {
+	const row = document.createElement("div");
+	row.className = "queue-row";
+	row.dataset.id = String(item.id);
+	const tag = el("span", `queue-tag${item.mode === "steer" ? " is-steer" : ""}`, item.mode === "steer" ? "插话" : "排队");
+	const text = el("span", "queue-text", inboxText(item));
+	const actions = document.createElement("div");
+	actions.className = "queue-actions";
+	if (item.mode !== "steer") actions.append(queueAction("插话", () => void promoteQueued(item)));
+	actions.append(queueAction("编辑", () => editQueued(row, item)));
+	actions.append(queueAction("删除", () => void withdrawQueued(item)));
+	row.append(tag, text, actions);
+	return row;
+}
+
+function queueAction(label: string, onClick: () => void): HTMLButtonElement {
+	const button = el("button", "queue-action", label) as HTMLButtonElement;
+	button.type = "button";
+	button.addEventListener("click", onClick);
+	return button;
+}
+
+/** 撤回一条排队提交；返回服务端结果（aborted / already_placed / settled）。 */
+async function deleteSubmission(id: number): Promise<string> {
+	if (state.conversationId === undefined) return "failed";
+	const response = await fetch(`/api/conversations/${state.conversationId}/submissions/${id}`, {
+		method: "DELETE",
+	});
+	if (!response.ok) {
+		const body = (await response.json().catch(() => ({}))) as { error?: string };
+		showBanner(body.error ?? `撤回失败（${response.status}）`);
+		return "failed";
+	}
+	return ((await response.json()) as { result: string }).result;
+}
+
+function explainWithdrawFailure(result: string): void {
+	if (result === "already_placed") showBanner("这条消息已经开始执行，无法撤回");
+	else if (result === "settled") showBanner("这条消息已经结束，无法撤回");
+}
+
+async function withdrawQueued(item: InboxItemView): Promise<void> {
+	const result = await deleteSubmission(item.id);
+	if (result === "aborted") {
+		showBanner("已撤回排队消息");
+		render();
+	} else {
+		explainWithdrawFailure(result);
+	}
+}
+
+/** 把已排队的 followUp 提升为插话：pi-durable 没有原地改 mode 的 API，只能撤回后以 steer 重发。 */
+async function promoteQueued(item: InboxItemView): Promise<void> {
+	const result = await deleteSubmission(item.id);
+	if (result !== "aborted") {
+		explainWithdrawFailure(result);
+		return;
+	}
+	const ok = await submitWithRequest(inboxText(item), newRequestId(), "steer", { clearInput: false });
+	if (ok) showBanner("已改为插话发送");
+}
+
+/** 编辑排队消息：撤回后以原投递方式重发；同样受“已放置则放弃”约束。 */
+function editQueued(row: HTMLElement, item: InboxItemView): void {
+	const editor = document.createElement("textarea");
+	editor.className = "queue-editor";
+	editor.value = inboxText(item);
+	editor.rows = 2;
+	const actions = document.createElement("div");
+	actions.className = "queue-actions";
+	const save = queueAction("保存", () => {
+		const text = editor.value.trim();
+		if (text.length === 0) return;
+		void (async () => {
+			const result = await deleteSubmission(item.id);
+			if (result !== "aborted") {
+				explainWithdrawFailure(result);
+				render();
+				return;
+			}
+			await submitWithRequest(text, newRequestId(), item.mode === "steer" ? "steer" : undefined, {
+				clearInput: false,
+			});
+		})();
+	});
+	const cancel = queueAction("取消", () => render());
+	actions.append(save, cancel);
+	row.replaceChildren(editor, actions);
+	editor.focus();
+	editor.select();
+}
+
 /**
- * 失败运行的落点：runFailure.first 之后的最后一条条目 id（错误卡片锚点）与该运行
- * 最后一条用户消息文本（重试内容）。窗口内没有任何条目时返回 undefined。
+ * 失败运行的落点：runFailure.first 之后的最后一条条目 id（错误卡片锚点）。
+ * 窗口内没有任何条目时返回 undefined。
  */
-function failurePlacement(
-	entries: readonly ChatEntry[],
-	first: number | undefined,
-): { anchorId: number; retryText: string | undefined } | undefined {
+function failurePlacement(entries: readonly ChatEntry[], first: number | undefined): number | undefined {
 	let last: ChatEntry | undefined;
-	let lastUser: ChatEntry | undefined;
 	for (const entry of entries) {
 		if (first !== undefined && entry.id < first) continue;
 		last = entry;
-		if (entry.kind === "pi.user") lastUser = entry;
 	}
-	if (last === undefined) return undefined;
-	return {
-		anchorId: last.id,
-		retryText: lastUser === undefined ? undefined : extractText(lastUser.model?.[0]),
-	};
+	return last?.id;
 }
 
 /** 错误卡片（DSH turnErrorRow：点列 + 600 标题 + 说明 + 重试 pill）。 */
-function renderErrorCard(
-	failure: NonNullable<LiveDoc["runFailure"]>,
-	content: string | undefined,
-): HTMLElement {
+function renderErrorCard(failure: NonNullable<LiveDoc["runFailure"]>): HTMLElement {
 	const card = document.createElement("div");
 	card.className = "flow-item turn-error";
 	card.append(el("span", "error-dot"));
@@ -1151,19 +1498,15 @@ function renderErrorCard(
 	if (failure.detail !== undefined && failure.detail.trim().length > 0) {
 		copy.append(el("span", "turn-error-message", failure.detail));
 	}
-	const retry = el("button", "error-retry", "重试") as HTMLButtonElement;
+	const retry = el("button", "error-retry", "续跑") as HTMLButtonElement;
 	retry.type = "button";
-	if (content === undefined || content.length === 0) {
-		retry.disabled = true; // 找不到原消息内容（不在窗口内）：无法重试
-		retry.title = "找不到原消息内容，无法重试";
-	} else {
-		retry.addEventListener("click", () => {
-			retry.disabled = true;
-			void retrySubmission(content).finally(() => {
-				retry.disabled = false;
-			});
+	retry.title = "让模型接着回答停住的上下文，不重复用户消息";
+	retry.addEventListener("click", () => {
+		retry.disabled = true;
+		void retryContinue().finally(() => {
+			retry.disabled = false;
 		});
-	}
+	});
 	card.append(copy, retry);
 	return card;
 }
@@ -1484,30 +1827,255 @@ function extractTextOf(content: string | ContentBlock[]): string {
 	return "";
 }
 
+/** 是否还有更早的历史：由转写按翻页返回的 hasMore 维护，不按条目 ID 推算（ID 有空洞）。 */
 function canLoadEarlier(): boolean {
-	const view = state.view;
-	if (view?.before === undefined) return false;
-	const firstEarlier = state.earlier[0];
-	if (firstEarlier === undefined) return true;
-	return firstEarlier.id > view.before;
+	return transcript.hasEarlier;
 }
 
+/** 向前翻页：取最早一条之前的一页，插入转写头部。 */
 async function loadEarlier(): Promise<void> {
-	const { conversationId, view } = state;
-	if (conversationId === undefined || view?.before === undefined) return;
-	const all = [...state.earlier, ...(view.entries ?? [])];
-	const oldest = all[0];
-	if (oldest === undefined) return;
+	if (state.conversationId === undefined) return;
 	try {
-		const page = (await fetchJson(
-			`/api/conversations/${conversationId}/entries?before=${oldest.id}`,
-		)) as EntriesPage;
-		state.earlier = [...page.entries, ...state.earlier];
-		render();
+		if (await transcript.loadEarlier()) render();
 	} catch (error) {
-		showBanner(error instanceof Error ? error.message : String(error));
+		showError(error);
 	}
 }
+
+/** 补一段缺口（断线重连后窗口不再接续已见条目）：从 after 向 upTo 取一页。 */
+function renderGap(after: number, upTo: number): HTMLElement {
+	const wrap = document.createElement("div");
+	wrap.className = "load-earlier";
+	const button = el("button", "", "加载缺失的消息") as HTMLButtonElement;
+	button.type = "button";
+	button.title = "断线期间的消息未到达，点击补齐";
+	button.addEventListener("click", async () => {
+		button.disabled = true;
+		try {
+			await transcript.fillGap(after, upTo);
+			render();
+		} catch (error) {
+			showError(error);
+			button.disabled = false;
+		}
+	});
+	wrap.append(button);
+	return wrap;
+}
+
+/** 条目翻页：`before` 取更早，`after` + `upTo` 取缺口内的一页（服务端返回升序 + hasMore）。 */
+async function fetchEntries(query: { before?: number; after?: number; upTo?: number }): Promise<EntriesPage> {
+	const params = new URLSearchParams();
+	if (query.before !== undefined) params.set("before", String(query.before));
+	if (query.after !== undefined) params.set("after", String(query.after));
+	if (query.upTo !== undefined) params.set("upTo", String(query.upTo));
+	return (await fetchJson(`/api/conversations/${state.conversationId}/entries?${params.toString()}`)) as EntriesPage;
+}
+
+// —— 上下文占用 + 累计花费（DSH ContextMeter） ——
+
+let contextTimer: number | undefined;
+let usageOpen = false;
+
+/** 会话条目/模型变化后去抖刷新上下文占用；流式 partial 不触发。 */
+function scheduleContextRefresh(id: number): void {
+	if (contextTimer !== undefined) window.clearTimeout(contextTimer);
+	contextTimer = window.setTimeout(() => {
+		contextTimer = undefined;
+		if (state.conversationId !== id) return;
+		const newest = transcript.newest ?? 0;
+		const model = state.view?.docs["pi.agent"]?.model;
+		const key = `${newest}:${model?.provider ?? ""}/${model?.modelId ?? ""}`;
+		if (key === state.contextKey) return;
+		state.contextKey = key;
+		fetchJson(`/api/conversations/${id}/context`)
+			.then((value) => {
+				if (state.conversationId !== id) return;
+				state.context = value as ContextOccupancy;
+				renderUsageMeter();
+			})
+			.catch(() => {
+				// 上下文占用失败不打扰聊天（旧值继续显示）
+			});
+	}, 250);
+}
+
+function summarizeUsage(doc: UsageDoc | undefined): { tokens: number; cost: number } {
+	let tokens = 0;
+	let cost = 0;
+	for (const bucket of [doc?.models, doc?.tools]) {
+		for (const usage of Object.values(bucket ?? {})) {
+			tokens += usage.totalTokens ?? (usage.input ?? 0) + (usage.output ?? 0) + (usage.cacheRead ?? 0);
+			cost += usage.cost?.total ?? 0;
+		}
+	}
+	return { tokens, cost };
+}
+
+function formatTokens(value: number): string {
+	if (value < 1_000) return String(Math.round(value));
+	if (value < 1_000_000) return `${(value / 1_000).toFixed(1)}K`;
+	return `${(value / 1_000_000).toFixed(2)}M`;
+}
+
+function formatCost(value: number): string {
+	if (value <= 0) return "$0";
+	if (value < 0.0001) return "<$0.0001";
+	if (value < 1) return `$${value.toFixed(4)}`;
+	return `$${value.toFixed(2)}`;
+}
+
+function contextRing(percent: number | null): SVGSVGElement {
+	const ns = "http://www.w3.org/2000/svg";
+	const svg = document.createElementNS(ns, "svg");
+	svg.setAttribute("viewBox", "0 0 14 14");
+	svg.setAttribute("width", "14");
+	svg.setAttribute("height", "14");
+	svg.setAttribute("aria-hidden", "true");
+	const radius = 5.5;
+	const circumference = 2 * Math.PI * radius;
+	const track = document.createElementNS(ns, "circle");
+	track.setAttribute("cx", "7");
+	track.setAttribute("cy", "7");
+	track.setAttribute("r", String(radius));
+	track.setAttribute("fill", "none");
+	track.setAttribute("stroke", "var(--border-l3)");
+	track.setAttribute("stroke-width", "2");
+	svg.append(track);
+	if (percent !== null && percent > 0) {
+		const fill = document.createElementNS(ns, "circle");
+		fill.setAttribute("cx", "7");
+		fill.setAttribute("cy", "7");
+		fill.setAttribute("r", String(radius));
+		fill.setAttribute("fill", "none");
+		fill.setAttribute("stroke", "var(--brand-primary)");
+		fill.setAttribute("stroke-width", "2");
+		fill.setAttribute("stroke-linecap", "round");
+		fill.setAttribute("stroke-dasharray", `${(circumference * Math.min(100, percent)) / 100} ${circumference}`);
+		fill.setAttribute("transform", "rotate(-90 7 7)");
+		svg.append(fill);
+	}
+	return svg;
+}
+
+/** composer 下方的一行：上下文环 + 百分比 + 累计 token/成本；点开看分解。 */
+function renderUsageMeter(): void {
+	if (state.conversationId === undefined) {
+		usageMeterEl.hidden = true;
+		usageMeterEl.replaceChildren();
+		return;
+	}
+	const usageDoc = state.view?.docs["pi.usage"];
+	const usage = summarizeUsage(usageDoc);
+	const context = state.context;
+	if (usage.tokens <= 0 && context === null) {
+		usageMeterEl.hidden = true;
+		usageMeterEl.replaceChildren();
+		return;
+	}
+	usageMeterEl.hidden = false;
+
+	const trigger = document.createElement("button");
+	trigger.type = "button";
+	trigger.className = "usage-trigger";
+	trigger.setAttribute("aria-expanded", String(usageOpen));
+	const percent = context?.percent ?? null;
+	const percentText = percent === null ? "—" : `${Math.round(percent)}%`;
+	trigger.title = `上下文已用 ${percentText}${context?.estimated === true ? "（按字符估算）" : ""}`;
+	trigger.append(contextRing(percent), el("span", "usage-percent", percentText));
+	if (usage.tokens > 0) {
+		trigger.append(el("span", "usage-sep", "·"), el("span", "usage-tokens", formatTokens(usage.tokens)));
+	}
+	if (usage.cost > 0) trigger.append(el("span", "usage-sep", "·"), el("span", "usage-cost", formatCost(usage.cost)));
+	trigger.addEventListener("click", () => {
+		usageOpen = !usageOpen;
+		renderUsageMeter();
+	});
+
+	const nodes: Node[] = [trigger];
+	if (usageOpen) nodes.push(renderUsagePanel(context, usageDoc));
+	usageMeterEl.replaceChildren(...nodes);
+}
+
+function renderUsagePanel(context: ContextOccupancy | null, usageDoc: UsageDoc | undefined): HTMLElement {
+	const panel = document.createElement("div");
+	panel.className = "usage-panel";
+	panel.setAttribute("role", "dialog");
+	panel.setAttribute("aria-label", "上下文与花费");
+
+	if (context !== null) {
+		const head = document.createElement("div");
+		head.className = "usage-panel-head";
+		head.append(el("span", "usage-panel-title", "上下文"));
+		head.append(
+			el(
+				"span",
+				"usage-panel-value",
+				context.windowTokens === null
+					? `${formatTokens(context.usedTokens)} tokens`
+					: `${formatTokens(context.usedTokens)} / ${formatTokens(context.windowTokens)}`,
+			),
+		);
+		panel.append(head);
+
+		const total =
+			context.breakdown.system + context.breakdown.tools + context.breakdown.messages;
+		const rows: [string, number][] = [
+			["系统提示", context.breakdown.system],
+			["工具定义", context.breakdown.tools],
+			["消息", context.breakdown.messages],
+		];
+		for (const [label, value] of rows) {
+			const row = document.createElement("div");
+			row.className = "usage-row";
+			row.append(el("span", "usage-row-label", label));
+			const bar = document.createElement("span");
+			bar.className = "usage-bar";
+			const fill = document.createElement("span");
+			fill.className = "usage-bar-fill";
+			fill.style.width = total <= 0 ? "0%" : `${Math.max(2, (value / total) * 100)}%`;
+			bar.append(fill);
+			row.append(bar, el("span", "usage-row-value", formatTokens(value)));
+			panel.append(row);
+		}
+		if (context.model !== null) {
+			panel.append(
+				el(
+					"div",
+					"usage-panel-note",
+					`${context.model.provider}/${context.model.modelId}${context.estimated ? " · 估算值" : ""}`,
+				),
+			);
+		}
+	}
+
+	const models = Object.entries(usageDoc?.models ?? {});
+	const tools = Object.entries(usageDoc?.tools ?? {});
+	if (models.length > 0 || tools.length > 0) {
+		panel.append(el("div", "usage-panel-title", "累计花费"));
+		const line = (key: string, usage: TokenUsage): HTMLElement => {
+			const row = document.createElement("div");
+			row.className = "usage-row usage-row-cost";
+			row.append(el("span", "usage-row-label", key));
+			const tokens = usage.totalTokens ?? (usage.input ?? 0) + (usage.output ?? 0);
+			row.append(
+				el("span", "usage-row-value", `${formatTokens(tokens)} · ${formatCost(usage.cost?.total ?? 0)}`),
+			);
+			return row;
+		};
+		for (const [key, usage] of models) panel.append(line(key, usage));
+		for (const [key, usage] of tools) panel.append(line(`工具 ${key}`, usage));
+	}
+
+	return panel;
+}
+
+document.addEventListener("pointerdown", (e) => {
+	if (!usageOpen) return;
+	if (e.target instanceof Node && usageMeterEl.contains(e.target)) return;
+	usageOpen = false;
+	renderUsageMeter();
+});
 
 // —— 小工具 ——
 
@@ -1550,7 +2118,7 @@ function showBanner(message: string): void {
 
 // —— 事件绑定 ——
 
-sendEl.addEventListener("click", send);
+sendEl.addEventListener("click", () => send("primary"));
 stopEl.addEventListener("click", () => void stopRun());
 newEl.addEventListener("click", () => {
 	void createConversation().catch(showError);
@@ -1578,7 +2146,7 @@ confirmEl.addEventListener("click", (e) => {
 inputEl.addEventListener("keydown", (e) => {
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
-		send();
+		send(e.ctrlKey || e.metaKey ? "alternate" : "primary");
 	}
 });
 
@@ -1589,12 +2157,15 @@ function showError(error: unknown): void {
 /** 停止当前运行：服务端 abort 后，已生成的部分保留。 */
 async function stopRun(): Promise<void> {
 	if (state.conversationId === undefined) return;
+	const queued = (state.view?.docs["pi.inbox"]?.items ?? []).filter(isQueuedInput).length;
 	stopEl.disabled = true;
 	try {
 		const response = await fetch(`/api/conversations/${state.conversationId}/stop`, { method: "POST" });
 		if (!response.ok) {
 			const body = (await response.json().catch(() => ({}))) as { error?: string };
 			showBanner(body.error ?? `停止失败（${response.status}）`);
+		} else if (queued > 0) {
+			showBanner(`已停止：${queued} 条排队消息已撤回`);
 		}
 	} catch (error) {
 		showBanner(error instanceof Error ? error.message : String(error));

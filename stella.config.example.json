@@ -1,0 +1,43 @@
+{
+	"$comment": "Stella 运行配置示例：复制为 data/stella.config.json（或 $STELLA_DATA_DIR/stella.config.json）。文件可选，热更新；不写回。.env 管密钥/端口/数据目录/默认模型。",
+	"defaultPreset": "standard",
+	"defaultMaxTurns": 128,
+	"settings": {
+		"stream": { "timeoutMs": 120000 },
+		"retry": { "maxRetries": 3, "baseDelayMs": 2000, "maxAgentDelayMs": 60000 },
+		"compaction": {
+			"enabled": true,
+			"reserveTokens": 16384,
+			"keepRecentTokens": 20000,
+			"backgroundTokens": 32768
+		},
+		"progress": { "partialIntervalMs": 100, "outputIntervalMs": 100, "persistWithinMs": 1000 },
+		"toolExecution": "parallel",
+		"steeringMode": "one-at-a-time",
+		"followUpMode": "one-at-a-time",
+		"afterFailedRun": "keep",
+		"restartLimit": 5,
+		"contextRetentionMs": 600000,
+		"documentRetentionMs": 600000
+	},
+	"presets": [
+		{
+			"id": "standard",
+			"name": "标准",
+			"description": "全部已安装能力：读写文件、执行命令、代码模式、子代理。",
+			"extensions": null,
+			"tools": null,
+			"modelTools": null,
+			"maxTurns": 128
+		},
+		{
+			"$comment": "自定义预设示例：只读、不跑命令、只留 16 轮。创建会话时选择 /api/conversations { preset: \"readonly\" }。",
+			"id": "readonly",
+			"name": "只读",
+			"description": "只读文件，不执行命令。",
+			"extensions": null,
+			"tools": ["read"],
+			"maxTurns": 16
+		}
+	]
+}

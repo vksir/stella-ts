@@ -22,6 +22,8 @@ export interface ConversationMeta {
 	title: string | null;
 	/** 归档（删除）标记：置真后从列表隐藏。数据不物理删除。 */
 	deleted: boolean;
+	/** 创建时选择的预设 id（只用于显示；能力已解析进 `pi.agent`，首轮后锁定）。 */
+	preset: string | null;
 	[key: string]: number | string | null | boolean;
 }
 
@@ -32,13 +34,13 @@ export const ConversationMeta = defineDoc<ConversationMeta>({
 	scope: "conversation",
 	history: "latest",
 	fork: "initial",
-	initial: () => ({ createdAt: 0, title: null, deleted: false }),
+	initial: () => ({ createdAt: 0, title: null, deleted: false, preset: null }),
 	checkpointWhen: () => true,
 });
 
 /** 新会话元数据的初值（创建会话的同一 commit 写入）。 */
 export function initialConversationMeta(): ConversationMeta {
-	return { createdAt: Date.now(), title: null, deleted: false };
+	return { createdAt: Date.now(), title: null, deleted: false, preset: null };
 }
 
 /** 首条用户消息截断为会话标题：按码点取前 30 字符，截断时补省略号。 */

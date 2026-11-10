@@ -2,19 +2,36 @@
  * Stella 的 harness 装配：pi-durable Harness + provider 目录 + 工具 + 人设 + 执行环境 + 存储。
  *
  * - 存储：SQLite（`node:sqlite`，Node ≥ 24）单文件 `data/stella.sqlite`；faux 模式用 MemoryStorage。
- * - 工具：自带 CodingTools（read/write/edit/bash），不自己写工具。
+ * - 工具：CodingTools（read/write/edit/bash，read 带图片处理器）+ 代码模式 + 前台子代理。
+ * - 安全：`StellaGuard` 只拦毁灭性命令；能力边界由预设负责。
+ * - 配置：`data/stella.config.json`（可选）承载 HarnessSettings / 预设 / 默认 maxTurns；
+ *   settings 以 getter 传入，文件变更热更新，不需要重启 Harness。
  * - 环境：`env` 回调按会话 agent 的 cwd 构建 NodeExecutionEnv，cwd 缺省为默认工作区。
  * - 提交重启恢复：打开存储后 `harness.resume()`。
  */
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
+import {
+	createRegistry,
+	Harness,
+	MemoryStorage,
+	type Extension,
+	type Registry,
+	type Report,
+} from "@earendil-works/pi-durable";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { CodingTools, createCodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parseModelSpec, type StellaConfig } from "./config.js";
+import { ConversationMeta, initialConversationMeta } from "./conversations.js";
+import { StellaGuard } from "./guard.js";
 import { StellaPersona } from "./persona.js";
+import { StellaSettingsStore } from "./settings.js";
+import { StellaSubagent } from "./subagent.js";
 import {
 	createModels,
 	discoverProviders,
@@ -33,6 +50,10 @@ export interface Stella {
 	readonly models: MutableModels;
 	/** 已装 provider 名（装载顺序，与映射表一致）；模型目录按它排序。 */
 	readonly registeredProviders: readonly string[];
+	/** 运行配置（HarnessSettings / 预设 / 默认 maxTurns），文件热更新。 */
+	readonly settings: StellaSettingsStore;
+	/** 扩展/工具注册表（预设按名字解析用）。 */
+	readonly registry: Registry;
 	/** faux 模式下的句柄：测试脚本用它固定模型回答。 */
 	readonly faux: ReturnType<typeof installFauxProvider> | undefined;
 	close(): Promise<void>;
@@ -51,14 +72,54 @@ export interface CreateStellaOptions {
 	readonly fauxModels?: readonly { readonly id: string; readonly name?: string }[];
 }
 
+/** 标准预设的 read 工具：有图片处理器就带上，失败时退回纯文本/直传图片。 */
+async function codingExtension(): Promise<Extension> {
+	try {
+		return createCodingTools({ images: await createNodePhotonImages() });
+	} catch (error) {
+		console.warn("[stella] 图片处理器初始化失败，read 将只直传小图：", error);
+		return CodingTools;
+	}
+}
+
+/** 调试/诊断用：把非致命失败分类打到服务端日志，不改变运行结果。 */
+function logReport(report: Report): void {
+	const task = "task" in report && report.task !== undefined ? report.task : undefined;
+	const where = [
+		task === undefined ? "" : `task=${task.id}(${task.kind})`,
+		task?.conversationId === undefined ? "" : `conversation=${task.conversationId}`,
+		"extension" in report && report.extension !== undefined ? `extension=${report.extension}` : "",
+		"callback" in report ? `callback=${report.callback}` : "",
+	]
+		.filter((part) => part.length > 0)
+		.join(" ");
+	const message = report.error instanceof Error ? report.error.message : String(report.error);
+	const line = `[stella] report ${report.kind}${where.length > 0 ? ` ${where}` : ""}: ${message}`;
+	if (report.kind === "storage_failed" || report.kind === "task_faulted" || report.kind === "task_interrupted") {
+		console.error(line);
+	} else {
+		console.warn(line);
+	}
+}
+
 export async function createStella(
 	config: StellaConfig,
 	env: NodeJS.ProcessEnv = process.env,
 	options: CreateStellaOptions = {},
 ): Promise<Stella> {
+	const settingsStore = new StellaSettingsStore(config.configPath);
+	settingsStore.load();
+
 	const registry = createRegistry();
-	registry.install(CodingTools); // read / write / edit / bash，自带即可
-	registry.install(StellaPersona); // 英语人设 section
+	registry.install(await codingExtension()); // read / write / edit / bash（read 带图片）
+	registry.install(StellaPersona); // 万用日常型人设 section
+	registry.install(StellaGuard); // 毁灭性命令兜底
+	registry.install(
+		createCodemodeExtension({
+			sandbox: new CodemodeSandbox({ memoryLimitBytes: 256 * 1024 * 1024 }),
+		}),
+	);
+	registry.install(StellaSubagent); // 前台子代理
 
 	const models: MutableModels = createModels();
 	let faux: ReturnType<typeof installFauxProvider> | undefined;
@@ -101,13 +162,25 @@ export async function createStella(
 		await mkdir(dirname(config.sqlitePath), { recursive: true });
 	}
 	await mkdir(config.workspaceDir, { recursive: true }); // 默认工作区
+	settingsStore.startWatching(); // 目录已存在，首次启动也能监听配置文件
 
 	const storage = config.faux ? new MemoryStorage() : await openNodeSqliteStorage(config.sqlitePath);
-	const harness = await Harness.open(storage, {
-		models,
-		registry,
-		env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? config.workspaceDir }),
-	}, BACKGROUND_CONTEXT);
+	const harness = await Harness.open(
+		storage,
+		{
+			models,
+			registry,
+			env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd ?? config.workspaceDir }),
+			settings: () => settingsStore.settings,
+			identity: { attribution: { name: "Stella", url: config.attributionUrl } },
+			onReport: logReport,
+			// 每个会话（含子代理创建的子会话）都在创建 commit 里拿到元数据文档。
+			conversationCreated: async (tx, conversation) => {
+				Object.assign(await tx.doc(ConversationMeta, conversation.id), initialConversationMeta());
+			},
+		},
+		BACKGROUND_CONTEXT,
+	);
 	harness.resume(); // 继续上一个进程未完成的运行
 
 	return {
@@ -116,7 +189,12 @@ export async function createStella(
 		defaultModel,
 		models,
 		registeredProviders,
+		settings: settingsStore,
+		registry,
 		faux,
-		close: () => harness.close(BACKGROUND_CONTEXT).then(() => undefined),
+		close: async () => {
+			settingsStore.stop();
+			await harness.close(BACKGROUND_CONTEXT);
+		},
 	};
 }

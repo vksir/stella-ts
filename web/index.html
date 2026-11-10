@@ -72,6 +72,8 @@
 							<span class="new-session-label">新会话</span>
 						</span>
 					</button>
+					<!-- 新会话预设（配置文件可新增；只有一个时不显示选择器） -->
+					<div id="preset-picker" class="preset-row" hidden></div>
 					<!-- 会话列表（DSH scrollRegion：行高 32px、radius-md、hover/选中填充） -->
 					<div class="scroll-region">
 						<ul id="conversation-list" class="session-list"></ul>
@@ -139,6 +141,8 @@
 					</div>
 					<!-- composer seat：sticky 置底 + 顶部 36px 渐变遮罩（DSH composerSeat） -->
 					<div id="composer-seat" class="composer-seat">
+						<!-- 队列条（DSH QueueDock）：运行中排队的提交 + 插话/编辑/删除 -->
+						<div id="queue-dock" class="queue-dock" hidden></div>
 						<footer id="composer" class="input-bar">
 							<div class="input-scroll">
 								<div class="grow">
@@ -181,6 +185,8 @@
 											</div>
 										</div>
 									</div>
+									<!-- 当前会话预设（只读；能力在创建时已写入 pi.agent） -->
+									<span id="preset-chip" class="chip preset-chip" hidden title="当前会话预设">标准</span>
 								</div>
 								<div class="trailing">
 									<button id="toggle-favorite" class="icon-btn fav-btn" type="button" title="收藏当前模型" aria-label="收藏当前模型">☆</button>
@@ -198,6 +204,8 @@
 								</div>
 							</div>
 						</footer>
+						<!-- 上下文占用 + 累计花费（DSH ContextMeter：composer 下方的小环 + 弹层） -->
+						<div id="usage-meter" class="usage-meter" hidden></div>
 					</div>
 				</div>
 			</section>

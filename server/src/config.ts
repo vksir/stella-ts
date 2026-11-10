@@ -18,12 +18,20 @@ export interface StellaConfig {
 	readonly faux: boolean;
 	/** server 监听端口。 */
 	readonly port: number;
+	/** 数据目录（SQLite、默认工作区、运行配置文件都在这）。 */
+	readonly dataDir: string;
 	/** SQLite 数据库路径（faux 模式下不使用）。 */
 	readonly sqlitePath: string;
+	/** 运行配置文件路径（可选；不存在时用内置默认值）。 */
+	readonly configPath: string;
 	/** 默认工作区目录（新会话工作目录的默认值）。 */
 	readonly workspaceDir: string;
 	/** 默认模型原始写法（provider/modelId）。 */
 	readonly defaultModelSpec: string;
+	/** 模型请求的 provider attribution URL（identity）；不配用本地默认值。 */
+	readonly attributionUrl: string;
+	/** faux 模式的流式速率（tokens/s），用于演示/测试排队与停止；不配则瞬时完成。 */
+	readonly fauxRate?: number;
 }
 
 export const DEFAULT_MODEL_SPEC = "deepseek/deepseek-chat";
@@ -60,15 +68,20 @@ export function parseModelSpec(spec: string): { provider: string; modelId: strin
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): StellaConfig {
-	const dataDir = env.STELLA_DATA_DIR?.trim() || DEFAULT_DATA_DIR;
+	const dataDir = resolve(env.STELLA_DATA_DIR?.trim() || DEFAULT_DATA_DIR);
 	const spec = env.STELLA_DEFAULT_MODEL?.trim() || DEFAULT_MODEL_SPEC;
 	parseModelSpec(spec); // 启动时即校验写法，给出明确中文报错
 	const port = Number.parseInt(env.STELLA_PORT?.trim() ?? "", 10);
+	const fauxRate = Number.parseFloat(env.STELLA_FAUX_RATE?.trim() ?? "");
 	return {
 		faux: isFauxMode(env),
 		port: Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT,
+		dataDir,
 		sqlitePath: resolve(dataDir, "stella.sqlite"),
+		configPath: resolve(dataDir, "stella.config.json"),
 		workspaceDir: resolve(dataDir, "workspace"),
 		defaultModelSpec: spec,
+		attributionUrl: env.STELLA_ATTRIBUTION_URL?.trim() || "http://localhost",
+		...(Number.isFinite(fauxRate) && fauxRate > 0 ? { fauxRate } : {}),
 	};
 }

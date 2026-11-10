@@ -12,7 +12,9 @@ import { createStella } from "./stella.js";
 async function main(): Promise<void> {
 	loadDotEnv();
 	const config = loadConfig(process.env);
-	const stella = await createStella(config, process.env);
+	const stella = await createStella(config, process.env, {
+		...(config.fauxRate !== undefined ? { fauxTokensPerSecond: config.fauxRate } : {}),
+	});
 	const app = createApp(stella);
 
 	const server = serve({ fetch: app.fetch, port: config.port }, (info) => {

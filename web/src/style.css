@@ -2598,3 +2598,282 @@ summary.tool-head::-webkit-details-marker {
 		color: var(--label-deep-diving);
 	}
 }
+
+/* ---------- 预设：新会话选择器 + 当前会话只读 chip ---------- */
+
+.preset-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 2px 10px 8px;
+}
+
+.preset-label {
+	flex: none;
+	color: var(--label-tertiary);
+	font-size: 12px;
+}
+
+.preset-select {
+	flex: 1;
+	min-width: 0;
+}
+
+body.sidebar-collapsed .preset-row {
+	display: none;
+}
+
+.preset-chip {
+	flex: none;
+	max-width: 120px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	cursor: default;
+}
+
+/* ---------- 队列条（DSH QueueDock）：composer 上方，逐项插话/编辑/删除 ---------- */
+
+.queue-dock {
+	box-sizing: border-box;
+	width: 100%;
+	max-width: var(--composer-card-max-width, 820px);
+	margin: 0 auto;
+	padding: 0 12px 6px;
+}
+
+.queue-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 0 4px 4px;
+	color: var(--label-tertiary);
+	font-size: 12px;
+}
+
+.queue-setting {
+	border: none;
+	background: transparent;
+	color: var(--label-tertiary);
+	font: inherit;
+	font-size: 12px;
+	cursor: pointer;
+	padding: 2px 6px;
+	border-radius: var(--radius-xs);
+}
+
+.queue-setting:hover {
+	background: var(--interactive-hover);
+	color: var(--label-secondary);
+}
+
+.queue-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-height: 168px;
+	overflow-y: auto;
+}
+
+.queue-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 30px;
+	padding: 4px 8px;
+	border: 1px solid var(--border-l2);
+	border-radius: var(--radius-md);
+	background: var(--bg-layer-1, var(--bg-base));
+	font-size: 13px;
+}
+
+.queue-tag {
+	flex: none;
+	padding: 1px 6px;
+	border-radius: var(--radius-xs);
+	background: var(--interactive-hover);
+	color: var(--label-tertiary);
+	font-size: 11px;
+	line-height: 16px;
+}
+
+.queue-tag.is-steer {
+	background: var(--interactive-hover-accent);
+	color: var(--label-secondary);
+}
+
+.queue-text {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--label-secondary);
+}
+
+.queue-actions {
+	display: flex;
+	flex: none;
+	gap: 2px;
+	opacity: 0;
+	transition: opacity var(--t-fast, 120ms) ease;
+}
+
+.queue-row:hover .queue-actions,
+.queue-row:focus-within .queue-actions {
+	opacity: 1;
+}
+
+.queue-action {
+	border: none;
+	background: transparent;
+	color: var(--label-tertiary);
+	font: inherit;
+	font-size: 12px;
+	padding: 2px 6px;
+	border-radius: var(--radius-xs);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.queue-action:hover {
+	background: var(--interactive-hover);
+	color: var(--label-primary);
+}
+
+.queue-editor {
+	flex: 1;
+	min-width: 0;
+	min-height: 44px;
+	resize: vertical;
+	border: 1px solid var(--border-l3);
+	border-radius: var(--radius-sm);
+	background: var(--bg-base);
+	color: var(--label-primary);
+	font: inherit;
+	font-size: 13px;
+	padding: 6px 8px;
+}
+
+@media (hover: none) {
+	.queue-actions {
+		opacity: 1;
+	}
+}
+
+/* ---------- 上下文占用 + 累计花费（DSH ContextMeter）：composer 下方 ---------- */
+
+.usage-meter {
+	position: relative;
+	display: flex;
+	justify-content: flex-end;
+	width: 100%;
+	max-width: var(--composer-card-max-width, 820px);
+	margin: 0 auto;
+	padding: 0 18px 6px;
+}
+
+.usage-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	border: none;
+	background: transparent;
+	color: var(--label-tertiary);
+	font: inherit;
+	font-size: 11px;
+	line-height: 16px;
+	padding: 2px 6px;
+	border-radius: var(--radius-xs);
+	cursor: pointer;
+}
+
+.usage-trigger:hover {
+	background: var(--interactive-hover);
+	color: var(--label-secondary);
+}
+
+.usage-sep {
+	opacity: 0.5;
+}
+
+.usage-panel {
+	position: absolute;
+	right: 18px;
+	bottom: calc(100% + 6px);
+	z-index: 12;
+	width: min(320px, calc(100vw - 40px));
+	padding: 10px 12px;
+	border: 1px solid var(--border-l2);
+	border-radius: var(--radius-md);
+	background: var(--bg-layer-1, var(--bg-base));
+	box-shadow: var(--shadow-lv3);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.usage-panel-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.usage-panel-title {
+	color: var(--label-tertiary);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.usage-panel-value {
+	color: var(--label-primary);
+	font-variant-numeric: tabular-nums;
+	font-size: 12px;
+}
+
+.usage-row {
+	display: grid;
+	grid-template-columns: 64px 1fr auto;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--label-secondary);
+}
+
+.usage-row-label {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.usage-bar {
+	height: 4px;
+	border-radius: 999px;
+	background: var(--interactive-hover);
+	overflow: hidden;
+}
+
+.usage-bar-fill {
+	display: block;
+	height: 100%;
+	border-radius: inherit;
+	background: var(--brand-primary);
+}
+
+.usage-row-value {
+	color: var(--label-tertiary);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.usage-row-cost {
+	grid-template-columns: 1fr auto;
+}
+
+.usage-panel-note {
+	color: var(--label-caption);
+	font-size: 11px;
+	padding-top: 2px;
+}
