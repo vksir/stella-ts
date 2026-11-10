@@ -150,3 +150,7 @@ vite.config.ts.timestamp-*
 
 # Stella 运行时数据：SQLite 数据库与默认工作区
 data/
+
+# 样式检查临时产物（截图、Chrome profile）
+shots/
+.taste-skill/
