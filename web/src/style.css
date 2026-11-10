@@ -202,22 +202,62 @@ html {
 	flex-direction: column;
 }
 
-/* —— 移动端顶栏（<768px 显示） —— */
+/* —— 通用图标钮（聊天区头部 / 折叠钮） —— */
 
-#mobilebar {
-	display: none;
+.icon-btn {
+	display: flex;
 	align-items: center;
-	gap: 6px;
-	height: 48px;
-	padding: 0 10px;
-	border-bottom: 1px solid var(--line-1);
-	background: var(--bg);
+	justify-content: center;
+	width: 32px;
+	height: 32px;
 	flex-shrink: 0;
+	background: none;
+	border: none;
+	color: var(--text-3);
+	cursor: pointer;
+	border-radius: var(--r-sm);
+	transition:
+		background-color var(--t-fast) ease,
+		color var(--t-fast) ease;
 }
 
-#mobilebar .mobilebar-title {
+.icon-btn:hover {
+	background: var(--hover);
+	color: var(--text-2);
+}
+
+.mobile-only {
+	display: none;
+}
+
+/* —— 聊天区头部（DSH ConversationHeader：headerLeading + 面包屑） —— */
+
+#chat-header {
+	flex-shrink: 0;
+	height: 52px;
+	border-bottom: 1px solid var(--line-1);
+	background: var(--bg);
+}
+
+.header-inner {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 100%;
+	max-width: 952px;
+	margin: 0 auto;
+	padding: 0 8px;
+}
+
+#chat-title {
 	font-size: 14px;
-	font-weight: 600;
+	line-height: 20px;
+	font-weight: 500;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
 }
 
 /* —— 布局 —— */
@@ -316,6 +356,81 @@ html {
 
 #sidebar:hover #conversation-list {
 	scrollbar-color: var(--sb-thumb) transparent;
+}
+
+/* —— 侧栏折叠态（≥768px）：56px 图标栏 —— */
+
+#sidebar-rail {
+	display: none;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	flex: 1;
+	min-height: 0;
+}
+
+.rail-btn {
+	position: relative;
+	width: 36px;
+	height: 36px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	background: none;
+	border: 1px solid transparent;
+	border-radius: 10px;
+	color: var(--text-2);
+	cursor: pointer;
+	font-size: 14px;
+	transition:
+		background-color var(--t-fast) ease,
+		color var(--t-fast) ease;
+}
+
+.rail-btn:hover {
+	background: var(--hover);
+	color: var(--text);
+}
+
+.rail-btn.brand-mark {
+	color: var(--blue);
+}
+
+.rail-spacer {
+	flex: 1;
+}
+
+@media (min-width: 768px) {
+	body.sidebar-collapsed #sidebar {
+		width: 56px;
+		padding: 10px 8px 8px;
+		gap: 8px;
+	}
+
+	body.sidebar-collapsed .brand-row,
+	body.sidebar-collapsed #new-conversation,
+	body.sidebar-collapsed #conversation-list,
+	body.sidebar-collapsed #conversation-settings,
+	body.sidebar-collapsed #sidebar-foot {
+		display: none;
+	}
+
+	body.sidebar-collapsed #sidebar-rail {
+		display: flex;
+	}
+
+	/* 折叠态下主题钮图标切换与常态一致 */
+	body.sidebar-collapsed .rail-btn svg {
+		position: absolute;
+		opacity: 0;
+	}
+
+	body.sidebar-collapsed #rail-theme[data-pref="light"] .icon-light,
+	body.sidebar-collapsed #rail-theme[data-pref="dark"] .icon-dark,
+	body.sidebar-collapsed #rail-theme[data-pref="system"] .icon-system {
+		opacity: 1;
+	}
 }
 
 #conversation-list li {
@@ -667,13 +782,9 @@ html {
 	overflow-wrap: anywhere;
 }
 
-/* 用户消息：右对齐浅蓝气泡（DSH UserMessageBubble） */
+/* 用户消息：右对齐浅蓝气泡（DSH UserMessageBubble）；行容器内贴列右缘 */
 .msg.user {
-	width: auto;
-	max-width: min(78%, 640px);
-	align-self: flex-end;
-	/* 右缘收在 920px 列的列线上 */
-	margin-right: calc((100% - min(920px, 100%)) / 2);
+	max-width: min(70%, 640px);
 	background: var(--bubble);
 	color: var(--text);
 	border: 1px solid transparent;
@@ -681,6 +792,64 @@ html {
 	padding: 10px 16px;
 	font-size: 14px;
 	line-height: 22px;
+}
+
+/* 消息行容器（DSH userRow）：气泡 + hover 操作行 */
+.msg-row {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	align-items: flex-start;
+}
+
+.msg-row.user-row {
+	align-items: flex-end;
+}
+
+.msg-row .msg-actions {
+	display: flex;
+	align-items: center;
+	height: 24px;
+	opacity: 0;
+	transition: opacity var(--t-fast) ease;
+}
+
+.msg-row:hover .msg-actions,
+.msg-row:focus-within .msg-actions {
+	opacity: 1;
+}
+
+/* 触屏无 hover：操作行常显 */
+@media (hover: none) {
+	.msg-row .msg-actions {
+		opacity: 1;
+	}
+}
+
+.msg-copy {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	background: none;
+	border: none;
+	color: var(--text-3);
+	cursor: pointer;
+	border-radius: var(--r-sm);
+	transition:
+		background-color var(--t-fast) ease,
+		color var(--t-fast) ease;
+}
+
+.msg-copy:hover {
+	background: var(--hover);
+	color: var(--text-2);
+}
+
+.msg-copy.copied,
+.msg-copy.copied:hover {
+	color: var(--ok);
 }
 
 /* 排队中的消息（pi.inbox）：虚线发丝边 + 降不透明度，与已入流消息区分 */
@@ -932,11 +1101,11 @@ html {
 	animation: fade-in var(--t-med) ease-out;
 }
 
-/* —— 输入区：28px 圆角胶囊卡（DSH InputBar） —— */
+/* —— 输入区：28px 圆角胶囊卡（DSH InputBar），比内容列宽 32px —— */
 
 #composer {
 	width: 100%;
-	max-width: 920px;
+	max-width: 952px;
 	align-self: center;
 	position: relative;
 	display: flex;
@@ -1192,6 +1361,67 @@ html {
 	overflow-y: auto;
 }
 
+/* —— 空会话 hero（DSH HeroShell）：标题 + composer 一起居中，略高于几何中心 —— */
+
+#hero {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding: 24px 16px 64px;
+	text-align: center;
+	animation: fade-in var(--t-med) ease-out;
+}
+
+.hero-mark {
+	font-size: 34px;
+	line-height: 1;
+	color: var(--blue);
+}
+
+.hero-title {
+	font-size: 26px;
+	line-height: 34px;
+	font-weight: 500;
+	color: var(--text);
+}
+
+.hero-sub {
+	font-size: 13px;
+	line-height: 20px;
+	color: var(--text-3);
+	margin-bottom: 18px;
+}
+
+#hero-composer-seat {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	width: 100%;
+}
+
+/* hero 态：隐藏消息滚动区，composer 缩到内容列宽、贴着标题居中 */
+#chat.is-hero #messages {
+	display: none;
+}
+
+#chat.is-hero #composer {
+	width: min(752px, 100%);
+	margin-bottom: 0;
+}
+
+/* hero 态 composer 上方不再需要滚动区渐隐遮罩 */
+#chat.is-hero #composer::before {
+	display: none;
+}
+
+#hero[hidden] {
+	display: none;
+}
+
 /* —— 删除确认弹层（DSH Modal：380px / 28px 圆角 / prominent） —— */
 
 #confirm {
@@ -1308,29 +1538,19 @@ html {
 	}
 }
 
-/* —— 窄屏：侧栏变抽屉 + 移动顶栏（DSH drawer 断点 768） —— */
+/* —— 窄屏：侧栏变抽屉 + 头部导航钮（DSH drawer 断点 768） —— */
 
 @media (max-width: 767.98px) {
-	#mobilebar {
+	.mobile-only {
 		display: flex;
 	}
 
-	#menu-toggle {
-		width: 36px;
-		height: 36px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: none;
-		border: none;
-		color: var(--text-2);
-		cursor: pointer;
-		border-radius: var(--r-sm);
-		transition: background-color var(--t-fast) ease;
+	.desktop-only {
+		display: none;
 	}
 
-	#menu-toggle:hover {
-		background: var(--hover);
+	#chat-header {
+		height: 48px;
 	}
 
 	#layout {
@@ -1364,7 +1584,6 @@ html {
 
 	.msg.user {
 		max-width: 92%;
-		margin-right: 0;
 	}
 
 	#composer {
@@ -1373,5 +1592,9 @@ html {
 
 	#banner {
 		margin-bottom: 10px;
+	}
+
+	#hero {
+		padding-bottom: 40px;
 	}
 }

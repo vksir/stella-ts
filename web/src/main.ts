@@ -210,6 +210,17 @@ const modelHintEl = document.getElementById("model-hint") as HTMLElement;
 const menuToggleEl = document.getElementById("menu-toggle") as HTMLButtonElement;
 const drawerMaskEl = document.getElementById("drawer-mask") as HTMLElement;
 const themeToggleEl = document.getElementById("theme-toggle") as HTMLButtonElement;
+const chatHeaderEl = document.getElementById("chat-header") as HTMLElement;
+const chatTitleEl = document.getElementById("chat-title") as HTMLElement;
+const sidebarToggleEl = document.getElementById("sidebar-toggle") as HTMLButtonElement;
+const railBrandEl = document.getElementById("rail-brand") as HTMLButtonElement;
+const railNewEl = document.getElementById("rail-new") as HTMLButtonElement;
+const railThemeEl = document.getElementById("rail-theme") as HTMLButtonElement;
+const railExpandEl = document.getElementById("rail-expand") as HTMLButtonElement;
+const chatEl = document.getElementById("chat") as HTMLElement;
+const heroEl = document.getElementById("hero") as HTMLElement;
+const heroSeatEl = document.getElementById("hero-composer-seat") as HTMLElement;
+const composerEl = document.getElementById("composer") as HTMLElement;
 
 // —— 主题：light | dark | system（默认 system），localStorage 持久化 ——
 // 应用与 head 内联防闪脚本同一套逻辑：html[data-theme] + color-scheme + theme-color。
@@ -235,10 +246,13 @@ function applyTheme(pref: ThemePref): void {
 		.querySelector('meta[name="theme-color"]')
 		?.setAttribute("content", resolved === "dark" ? "#151517" : "#ffffff");
 	themeToggleEl.dataset.pref = pref;
+	railThemeEl.dataset.pref = pref;
 	const label =
 		pref === "light" ? "浅色" : pref === "dark" ? "深色" : "跟随系统";
-	themeToggleEl.title = `主题：${label}`;
-	themeToggleEl.setAttribute("aria-label", `主题：${label}，点击切换`);
+	for (const btn of [themeToggleEl, railThemeEl]) {
+		btn.title = `主题：${label}`;
+		btn.setAttribute("aria-label", `主题：${label}，点击切换`);
+	}
 }
 
 function loadThemePref(): ThemePref {
@@ -266,10 +280,45 @@ function cycleTheme(): void {
 
 applyTheme(loadThemePref());
 themeToggleEl.addEventListener("click", cycleTheme);
+railThemeEl.addEventListener("click", cycleTheme);
 // 跟随系统时，系统切换即时生效
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
 	applyTheme(loadThemePref());
 });
+
+// —— 侧栏折叠（≥768px）：280px ↔ 56px 图标栏，localStorage 记忆 ——
+
+const SIDEBAR_KEY = "stella-sidebar-collapsed";
+
+function applySidebarCollapsed(collapsed: boolean): void {
+	document.body.classList.toggle("sidebar-collapsed", collapsed);
+	sidebarToggleEl.setAttribute("aria-pressed", String(collapsed));
+	sidebarToggleEl.setAttribute("aria-label", collapsed ? "展开侧栏" : "收起侧栏");
+}
+
+function loadSidebarCollapsed(): boolean {
+	try {
+		return localStorage.getItem(SIDEBAR_KEY) === "1";
+	} catch {
+		return false;
+	}
+}
+
+function toggleSidebarCollapsed(): void {
+	const next = !document.body.classList.contains("sidebar-collapsed");
+	try {
+		localStorage.setItem(SIDEBAR_KEY, next ? "1" : "0");
+	} catch {
+		/* 仅本次生效 */
+	}
+	applySidebarCollapsed(next);
+}
+
+applySidebarCollapsed(loadSidebarCollapsed());
+sidebarToggleEl.addEventListener("click", toggleSidebarCollapsed);
+railBrandEl.addEventListener("click", toggleSidebarCollapsed);
+railExpandEl.addEventListener("click", toggleSidebarCollapsed);
+railNewEl.addEventListener("click", () => void createConversation().catch(showError));
 
 // —— 移动端抽屉：<768px 侧栏滑入，遮罩点击 / 选中会话后关闭 ——
 
@@ -284,6 +333,31 @@ menuToggleEl.addEventListener("click", () => {
 	setDrawer(!document.body.classList.contains("drawer-open"));
 });
 drawerMaskEl.addEventListener("click", () => setDrawer(false));
+
+// —— 空会话 hero（DSH HeroShell）：composer 与标题一起居中 ——
+// 态边沿触发：进入 hero 时把 composer DOM 挂进 hero 容器，退出时移回流尾。
+
+let heroMode = false;
+
+function updateHeroMode(on: boolean): void {
+	if (heroMode === on) return;
+	heroMode = on;
+	chatEl.classList.toggle("is-hero", on);
+	heroEl.hidden = !on;
+	if (on) {
+		heroSeatEl.appendChild(composerEl);
+	} else {
+		chatEl.appendChild(composerEl); // 移回流尾（原 DOM 位置）
+	}
+}
+
+// —— 聊天区头部：当前会话标题（DSH 面包屑）；无会话空白态隐藏整条 header ——
+
+function renderChatTitle(): void {
+	const conv = state.conversations.find((c) => c.id === state.conversationId);
+	chatTitleEl.textContent = conv?.title ?? "新对话";
+	chatHeaderEl.hidden = state.conversationId === undefined;
+}
 
 // —— 输入框自动长高（1–10 行，上限 240px），发送/清空后回落 ——
 
@@ -693,6 +767,8 @@ function render(): void {
 		button.type = "button";
 		button.addEventListener("click", () => void createConversation().catch(showError));
 		nodes.push(button);
+		updateHeroMode(false); // 空白态：composer 回流尾，messages 显示 hero 文案
+		renderChatTitle();
 		messagesEl.replaceChildren(...nodes);
 		return;
 	}
@@ -759,6 +835,16 @@ function render(): void {
 
 	stopEl.hidden = !busy;
 
+	// 空会话 hero：有会话但无任何内容（无条目/无排队/无运行态）时，标题 + composer 居中
+	updateHeroMode(
+		state.conversationId !== undefined &&
+			!busy &&
+			entries.length === 0 &&
+			inbox.length === 0 &&
+			failure === undefined,
+	);
+	renderChatTitle();
+
 	const nearBottom = isNearBottom();
 	messagesEl.replaceChildren(...nodes);
 	if (nearBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -790,6 +876,7 @@ function renderList(): void {
 		nodes.push(item);
 	}
 	listEl.replaceChildren(...nodes);
+	renderChatTitle(); // 首条消息更新了会话标题，头部标题随之刷新
 }
 
 /** 无会话时禁用输入与发送（空白态不接收消息）。 */
@@ -902,7 +989,43 @@ function inboxText(item: InboxItemView): string {
 function renderQueuedBubble(item: InboxItemView): HTMLElement {
 	const wrap = el("div", "msg user queued", inboxText(item));
 	wrap.append(el("span", "queued-tag", "等待中"));
-	return wrap;
+	return withCopyActions(wrap, inboxText(item), "user");
+}
+
+// —— 消息操作行（DSH MessageIconActions）：气泡下方 hover 显现的复制钮 ——
+
+const COPY_ICON = `<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="7" width="9" height="9" rx="2" /><path d="M13 4.5A1.5 1.5 0 0 0 11.5 3h-6A2.5 2.5 0 0 0 3 5.5v6A1.5 1.5 0 0 0 4.5 13" /></svg>`;
+const CHECK_ICON = `<svg viewBox="0 0 20 20" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10.5l4 4 8-8.5" /></svg>`;
+
+/** 消息 → 行容器（气泡 + 操作行）：空文本不包装，直接返回原节点。 */
+function withCopyActions(bubble: HTMLElement, text: string, side: "user" | "stella"): HTMLElement {
+	if (text.length === 0) return bubble;
+	const row = el("div", `msg-row ${side}-row`);
+	const copy = el("button", "msg-copy") as HTMLButtonElement;
+	copy.type = "button";
+	copy.title = "复制";
+	copy.setAttribute("aria-label", "复制消息");
+	copy.innerHTML = COPY_ICON;
+	copy.addEventListener("click", () => {
+		void navigator.clipboard
+			.writeText(text)
+			.then(() => {
+				copy.innerHTML = CHECK_ICON;
+				copy.classList.add("copied");
+				copy.title = "已复制";
+				return new Promise((r) => setTimeout(r, 1500));
+			})
+			.then(() => {
+				copy.innerHTML = COPY_ICON;
+				copy.classList.remove("copied");
+				copy.title = "复制";
+			})
+			.catch(() => showBanner("复制失败：浏览器未授权剪贴板访问。"));
+	});
+	const actions = el("div", "msg-actions");
+	actions.append(copy);
+	row.append(bubble, actions);
+	return row;
 }
 
 /**
@@ -994,7 +1117,7 @@ function renderEntry(
 	switch (entry.kind) {
 		case "pi.user": {
 			const text = extractText(entry.model?.[0]);
-			return el("div", `msg user`, text);
+			return withCopyActions(el("div", "msg user", text), text, "user");
 		}
 		case "pi.assistant": {
 			const message = entry.model?.[0];
@@ -1015,7 +1138,7 @@ function renderEntry(
 			if (text.length === 0 && !blocks.some((block) => block.type === "toolCall")) {
 				wrap.append(el("span", "placeholder", "（无文本内容）"));
 			}
-			return wrap;
+			return withCopyActions(wrap, text, "stella");
 		}
 		default: {
 			// pi.system 是提示词/工具变化的位置记录，对用户无意义：静默跳过；
