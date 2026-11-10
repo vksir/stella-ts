@@ -207,6 +207,92 @@ const workspaceResetEl = document.getElementById("reset-workspace") as HTMLButto
 const modelSelectEl = document.getElementById("model-select") as HTMLSelectElement;
 const favoriteEl = document.getElementById("toggle-favorite") as HTMLButtonElement;
 const modelHintEl = document.getElementById("model-hint") as HTMLElement;
+const menuToggleEl = document.getElementById("menu-toggle") as HTMLButtonElement;
+const drawerMaskEl = document.getElementById("drawer-mask") as HTMLElement;
+const themeToggleEl = document.getElementById("theme-toggle") as HTMLButtonElement;
+
+// —— 主题：light | dark | system（默认 system），localStorage 持久化 ——
+// 应用与 head 内联防闪脚本同一套逻辑：html[data-theme] + color-scheme + theme-color。
+
+type ThemePref = "light" | "dark" | "system";
+
+const THEME_KEY = "stella-theme";
+
+function systemPrefersDark(): boolean {
+	return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function resolveTheme(pref: ThemePref): "light" | "dark" {
+	if (pref === "system") return systemPrefersDark() ? "dark" : "light";
+	return pref;
+}
+
+function applyTheme(pref: ThemePref): void {
+	const resolved = resolveTheme(pref);
+	document.documentElement.dataset.theme = resolved;
+	document.documentElement.style.colorScheme = resolved;
+	document
+		.querySelector('meta[name="theme-color"]')
+		?.setAttribute("content", resolved === "dark" ? "#151517" : "#ffffff");
+	themeToggleEl.dataset.pref = pref;
+	const label =
+		pref === "light" ? "浅色" : pref === "dark" ? "深色" : "跟随系统";
+	themeToggleEl.title = `主题：${label}`;
+	themeToggleEl.setAttribute("aria-label", `主题：${label}，点击切换`);
+}
+
+function loadThemePref(): ThemePref {
+	try {
+		const raw = localStorage.getItem(THEME_KEY);
+		if (raw === "light" || raw === "dark" || raw === "system") return raw;
+	} catch {
+		/* localStorage 不可用时跟随系统 */
+	}
+	return "system";
+}
+
+/** 循环切换：浅色 → 深色 → 跟随系统 → 浅色。 */
+function cycleTheme(): void {
+	const order: ThemePref[] = ["light", "dark", "system"];
+	const current = order.indexOf(loadThemePref());
+	const next = order[(current + 1) % order.length] ?? "system";
+	try {
+		localStorage.setItem(THEME_KEY, next);
+	} catch {
+		/* 存不进就仅本次生效 */
+	}
+	applyTheme(next);
+}
+
+applyTheme(loadThemePref());
+themeToggleEl.addEventListener("click", cycleTheme);
+// 跟随系统时，系统切换即时生效
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+	applyTheme(loadThemePref());
+});
+
+// —— 移动端抽屉：<768px 侧栏滑入，遮罩点击 / 选中会话后关闭 ——
+
+function setDrawer(open: boolean): void {
+	document.body.classList.toggle("drawer-open", open);
+	drawerMaskEl.hidden = !open;
+	menuToggleEl.setAttribute("aria-expanded", String(open));
+	menuToggleEl.setAttribute("aria-label", open ? "关闭会话列表" : "打开会话列表");
+}
+
+menuToggleEl.addEventListener("click", () => {
+	setDrawer(!document.body.classList.contains("drawer-open"));
+});
+drawerMaskEl.addEventListener("click", () => setDrawer(false));
+
+// —— 输入框自动长高（1–10 行，上限 240px），发送/清空后回落 ——
+
+function autosizeInput(): void {
+	inputEl.style.height = "auto";
+	inputEl.style.height = `${Math.min(inputEl.scrollHeight, 240)}px`;
+}
+
+inputEl.addEventListener("input", autosizeInput);
 
 // —— 收藏：localStorage 持久化（GLOSSARY「收藏」：浏览器本地偏好，排序在列表最前）——
 
@@ -368,6 +454,7 @@ async function submitWithRequest(content: string, requestId: string): Promise<vo
 			showBanner(body.error ?? `发送失败（${response.status}）`);
 		} else {
 			inputEl.value = "";
+			autosizeInput();
 			void refreshList().catch(() => undefined); // 首条消息更新了会话标题，刷新侧栏
 		}
 	} catch (error) {
@@ -594,11 +681,17 @@ function render(): void {
 
 	const nodes: Node[] = [];
 	if (state.conversationId === undefined) {
-		// 空白态：没有会话（全部被删除），给出新建入口
-		const button = el("button", "empty-new", "＋ 新建一个会话") as HTMLButtonElement;
+		// 空白态：没有会话（全部被删除），hero + 新建入口
+		const hero = el("div", "empty");
+		hero.append(
+			el("div", "empty-mark", "✦"),
+			el("div", "empty-title", "Stella"),
+			el("div", "empty-sub", "万用日常型助手，从一个会话开始。"),
+		);
+		nodes.push(hero);
+		const button = el("button", "empty-new", "新建会话") as HTMLButtonElement;
 		button.type = "button";
 		button.addEventListener("click", () => void createConversation().catch(showError));
-		nodes.push(el("div", "empty", "没有会话。"));
 		nodes.push(button);
 		messagesEl.replaceChildren(...nodes);
 		return;
@@ -683,6 +776,7 @@ function renderList(): void {
 		main.append(title, time);
 		main.addEventListener("click", () => {
 			if (conversation.id !== state.conversationId) switchTo(conversation.id);
+			setDrawer(false); // 移动端抽屉中选中会话后收回侧栏
 		});
 		const remove = el("button", "conversation-delete", "✕") as HTMLButtonElement;
 		remove.type = "button";
@@ -705,6 +799,7 @@ function setBusyEnabled(): void {
 	sendEl.disabled = none;
 	if (none) {
 		inputEl.value = "";
+		autosizeInput();
 		inputEl.placeholder = "先新建一个会话…";
 	} else {
 		inputEl.placeholder = "给 Stella 发消息…（Enter 发送，Shift+Enter 换行）";
@@ -1124,7 +1219,12 @@ function isNearBottom(): boolean {
 }
 
 function setConn(online: boolean): void {
-	connEl.textContent = online ? "已连接" : "重连中…";
+	// 空白态（无会话）没有可重连的目标：如实显示「未连接」而非「重连中…」
+	connEl.textContent = online
+		? "已连接"
+		: state.conversationId === undefined
+			? "未连接"
+			: "重连中…";
 	connEl.classList.toggle("conn-online", online);
 	connEl.classList.toggle("conn-offline", !online);
 }
