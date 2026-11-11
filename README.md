@@ -61,12 +61,15 @@ cp .env.example .env   # 然后编辑 .env
 
 | 变量 | 说明 |
 |---|---|
-| `<PROVIDER>_API_KEY` | 见 `.env.example` 的八个映射 |
+| `<PROVIDER>_API_KEY` | 见 `.env.example` 的九个映射（deepseek / zai / moonshotai-cn / openrouter / opencode-go / openai / anthropic / groq / xai） |
 | `STELLA_DEFAULT_MODEL` | 默认模型 `provider/modelId`，缺省 `deepseek/deepseek-chat` |
 | `STELLA_PORT` | server 端口，默认 7090（Vite 代理目标） |
 | `STELLA_DATA_DIR` | 数据目录（SQLite + 默认工作区 + `stella.config.json`），默认 `./data`（相对 server 进程 cwd） |
 | `STELLA_ATTRIBUTION_URL` | 模型请求 attribution 的 url（OpenRouter 排行分组），缺省 `http://localhost` |
 | `STELLA_FAUX` | `1` 时 faux provider + 内存存储（免 key 体验/测试） |
+| `STELLA_FAUX_RATE` | faux 模式下的流式速率（tokens/s），用于观察排队/停止；不配则瞬时完成 |
+| `STELLA_ENTRY_WINDOW` | SSE view 携带的最近条目数，默认 200（范围 4–400）。调小便于在短会话上验证「加载更早」与断线补页，调大用于长会话压测 |
+| `STELLA_ORIGIN` | 仅 Vite dev 使用：`/api` 代理目标，默认 `http://localhost:7090`（例如给沙箱实例换端口） |
 
 ## 运行配置（`data/stella.config.json`）
 
