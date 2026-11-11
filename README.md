@@ -8,7 +8,7 @@ Stella 是一个万用日常型 Web Agent：通过浏览器页面对话，能读
 
 ```
 server/   服务端（Node 24、TS ESM、Hono + @hono/node-server、pi-durable Harness）
-web/      前端（Vite + vanilla TS，无 UI 框架）
+web/      前端（React 18 + Vite 6；渲染内核复刻 dsh：每 key 订阅 + 增量 Markdown）
 data/     运行时数据（SQLite 数据库与默认工作区 data/workspace，已 gitignore）
 ```
 
@@ -54,7 +54,7 @@ cp .env.example .env   # 然后编辑 .env
 | `npm run dev` | 并行启动 server（tsx watch）与 web（Vite），`/api` 代理到 server |
 | `npm run build` | 构建 server（tsc）与 web（vite build） |
 | `npm start` | 运行构建产物（同时伺服 web/dist） |
-| `npm test` | 跑服务端测试（vitest，零网络零 key） |
+| `npm test` | 跑全部测试（server 45 + web 49，零网络零 key）；`test:server` / `test:web` 可单跑 |
 | `npm run typecheck` | 两个 workspace 的 tsc strict 检查 |
 
 ## 配置项（`.env`，只读 cwd 与仓库根两级）
@@ -108,5 +108,14 @@ cp .env.example .env   # 然后编辑 .env
 - **工具**：`read`/`write`/`edit`/`bash`（read 带图片处理器）、`codemode`（QuickJS 沙箱，脚本调用工具）、`subagent`（前台子代理，子会话拥有独立上下文）；经 `NodeExecutionEnv` 在会话工作目录直接执行（本机部署、无沙箱，见 ADR）。`StellaGuard` 只拦毁灭性命令，能力边界由预设负责。新会话工作目录缺省为默认工作区 `data/workspace`。
 - **人设**：英语 section（万用日常型助手、回复跟随用户语言），不偏向编程。
 - **持久化**：`data/stella.sqlite`（`node:sqlite`）；重启后 `harness.resume()` 续跑未完成的运行。
+- **前端渲染内核**（复刻 DeepSeek Harness，见 ADR-0003）：React 18 + 自研 store（`useSyncExternalStore`，不引状态管理库/组件库/Tailwind）。
+  - 消息流按稳定 key 拆成 seat，**每个 seat 只订阅自己的数据切片**：流式输出时只有流式节点重渲，历史消息 DOM 不动（实测 200+ 次采样、历史节点变化 0）。
+  - Markdown 走**冻结块增量解析**（`mdast-util-from-markdown` + GFM，末尾 2 块之外冻结），每 chunk 只重 parse 尾部切片；React key 取块源文本起始偏移，跨冻结边界不 remount。
+  - 流式更新走 rAF 合帧（一帧至多一次）；受控输入同步通知，textarea 不跳光标。
+  - 代码高亮用 shiki（JS 正则引擎、无 WASM），按需动态加载（主包 ~300KB）；落定整块高亮，流式中走 `StreamingHighlightSession`（行级缓存 + grammar 状态续接）。
+  - 观感层为单一 `style.css`（三层 token 体系），与 dsh 逐项对齐；明暗双主题经 `html[data-theme]` 切换。
 
-测试：`npm test`。faux provider + MemoryStorage 进程内起 app，验证「POST 消息 → SSE 收到用户条目与回答条目」闭环，零网络零 key。
+测试：`npm test`（94 项，零网络零 key）。
+
+- **server（45）**：faux provider + MemoryStorage 进程内起 app，验证「POST 消息 → SSE 收到用户条目与回答条目」闭环，以及翻页/`?from=` 续订、排队与错误重试、工作目录工具、上下文占用、续跑、压缩等契约。
+- **web（49）**：增量 Markdown 冻结块（7）、转写窗口合并与缺口（10）、失败文案与工具摘要（12）、Markdown 渲染类名契约（12）、流式高亮会话（8）。
