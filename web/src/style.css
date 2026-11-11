@@ -663,8 +663,11 @@ body {
 	margin-left: auto;
 	padding: 0 5px;
 	border-radius: 4px;
-	background: var(--interactive-hover);
-	color: var(--label-caption);
+	/* 键帽不再压深底：暗色按钮本身已是 rgb(67,69,74)，再叠 8% 白会让
+	   11px 小字对比度掉到 2:1。改为发丝描边 + tertiary（实测 ~4.9:1）。 */
+	border: var(--hairline) solid var(--border-l3);
+	background: transparent;
+	color: var(--label-tertiary);
 	font-size: 11px;
 	line-height: 16px;
 	font-variant-numeric: tabular-nums;
