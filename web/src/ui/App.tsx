@@ -7,11 +7,13 @@ import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "
 import { store } from "../store/app-store";
 import { cycleTheme, loadThemePref } from "../theme";
 import {
+	FolderIcon,
 	MenuIcon,
 	MoonIcon,
 	PanelCollapseIcon,
 	PanelExpandIcon,
 	PlusIcon,
+	SearchIcon,
 	SunIcon,
 	SystemIcon,
 	TrashIcon,
@@ -75,8 +77,25 @@ interface SidebarState {
 const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): ReactNode {
 	const app = useApp();
 	const [themePref, setThemePref] = useState(loadThemePref);
+	const [searching, setSearching] = useState(false);
+	const [query, setQuery] = useState("");
+	const searchRef = useRef<HTMLInputElement>(null);
 	const collapsed = state.collapsed;
 	const drawer = !state.desktop && !collapsed;
+
+	useEffect(() => {
+		if (searching) searchRef.current?.focus();
+	}, [searching]);
+
+	const needle = query.trim().toLowerCase();
+	const visible = needle.length === 0
+		? app.conversations
+		: app.conversations.filter((c) => (c.title ?? "新对话").toLowerCase().includes(needle));
+
+	// 当前会话的工作目录（真实数据：会话设置 cwd 的末段）
+	const cwd = app.workspace?.cwd ?? "";
+	// 取路径末段：先把反斜杠归一为斜杠，再按 "/" 切（Windows 与 POSIX 通用，无需正则转义）。
+	const cwdName = cwd.split(String.fromCharCode(92)).join("/").split("/").filter((part) => part.length > 0).pop() ?? "";
 
 	const onThemeToggle = (): void => setThemePref(cycleTheme());
 
@@ -161,6 +180,19 @@ const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): React
 								<button
 									type="button"
 									className="icon-btn"
+									title={searching ? "关闭搜索" : "搜索会话"}
+									aria-label={searching ? "关闭搜索" : "搜索会话"}
+									aria-pressed={searching}
+									onClick={() => {
+										setSearching(!searching);
+										if (searching) setQuery("");
+									}}
+								>
+									<SearchIcon />
+								</button>
+								<button
+									type="button"
+									className="icon-btn"
 									title="新会话"
 									aria-label="新会话"
 									onClick={() => void store.createConversation().catch((error) => store.showError(error))}
@@ -169,8 +201,35 @@ const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): React
 								</button>
 							</span>
 						</div>
+						{searching && (
+							<div className="session-search">
+								<input
+									ref={searchRef}
+									type="search"
+									value={query}
+									placeholder="搜索会话标题"
+									aria-label="搜索会话标题"
+									onChange={(e) => setQuery(e.target.value)}
+									onKeyDown={(e) => {
+										if (e.key === "Escape") {
+											setQuery("");
+											setSearching(false);
+										}
+									}}
+								/>
+							</div>
+						)}
+						{cwdName.length > 0 && (
+							<div className="workspace-row" title={cwd}>
+								<FolderIcon />
+								<span className="workspace-row-name">{cwdName}</span>
+							</div>
+						)}
 						<ul id="conversation-list" className="session-list">
-							{app.conversations.map((conversation) => (
+							{visible.length === 0 && needle.length > 0 && (
+								<li className="session-empty">{`没有匹配「${query.trim()}」的会话`}</li>
+							)}
+							{visible.map((conversation) => (
 								<li
 									key={conversation.id}
 									className={`session-row${conversation.id === app.conversationId ? " selected" : ""}`}

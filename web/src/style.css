@@ -732,6 +732,65 @@ body {
 	height: 24px;
 }
 
+/* 工作区行（DSH projectRow：34px，16px 强调色文件夹 + 14px 名称） */
+.workspace-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: none;
+	min-height: 34px;
+	box-sizing: border-box;
+	padding: 5px 10px;
+	border-radius: var(--sb-row-radius);
+	color: var(--label-primary);
+	font-size: 14px;
+	line-height: 22px;
+	min-width: 0;
+}
+
+.workspace-row svg {
+	flex: none;
+	color: var(--state-business-primary);
+}
+
+.workspace-row-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 会话搜索（客户端过滤：按标题匹配） */
+.session-search {
+	flex: none;
+	margin: 2px 4px 4px;
+}
+
+.session-search input {
+	box-sizing: border-box;
+	width: 100%;
+	height: 30px;
+	padding: 0 10px;
+	border: var(--hairline) solid var(--border-l3);
+	border-radius: var(--radius-sm);
+	background: var(--bg-base);
+	color: var(--label-primary);
+	font-size: 13px;
+	line-height: 20px;
+	outline: none;
+}
+
+.session-search input:focus-visible {
+	border-color: var(--state-business-primary);
+}
+
+.session-empty {
+	padding: 12px 10px;
+	font-size: 13px;
+	line-height: 20px;
+	color: var(--label-caption);
+}
+
 .session-list {
 	flex: none;
 	display: flex;
