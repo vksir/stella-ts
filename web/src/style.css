@@ -2138,6 +2138,17 @@ html[data-theme="dark"] .code-block pre code span {
 	}
 }
 
+/* 减少动效：关掉扫光并还原实色文字（否则渐变裁剪的文字在静态下对比度不稳） */
+@media (prefers-reduced-motion: reduce) {
+	.running-text {
+		animation: none;
+		background: none;
+		color: var(--label-deep-diving);
+		-webkit-background-clip: border-box;
+		background-clip: border-box;
+	}
+}
+
 /* 工具行运行中摘要：文字扫光（DSH ToolRow collapsedContent 包 TextShimmer） */
 .tool-summary[data-streaming] {
 	background: linear-gradient(
