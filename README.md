@@ -85,10 +85,24 @@ cp .env.example .env   # 然后编辑 .env
   "settings": { "stream": { "timeoutMs": 120000 } },
   "presets": [
     { "id": "standard", "name": "标准", "extensions": null, "tools": null, "maxTurns": 128 },
-    { "id": "readonly", "name": "只读", "tools": ["read"], "maxTurns": 16 }
+    { "id": "readonly", "name": "只读", "extensions": ["stella-persona"], "tools": ["read"], "maxTurns": 16 }
   ]
 }
 ```
+
+### 预设的两个轴：`extensions` 与 `tools`
+
+两者**互不推导**，配置时要自己保持一致：
+
+- `tools` 过滤**工具列表**（模型能调用什么）。
+- `extensions` 决定装载哪些**扩展**；扩展还会往系统提示里注入 section（例如 `codemode`
+  扩展注入的 code mode 说明段、`stella-persona` 注入人设段）。
+- 因此「只保留 `read` 工具」不会自动删掉 code mode 的提示词段——模型会读到一份指向
+  不存在工具的说明。示例配置里的 `readonly` 预设因此同时把 `extensions` 收窄为
+  `["stella-persona"]`。
+
+已安装扩展名：`stella-persona`（人设）、`codemode`（代码模式）、`subagent`（子代理）。
+`null` / 缺省 = 跟随宿主默认（全部装载）；`[]` = 全部不装。
 
 - **预设**：创建会话时选择的一套能力与人设（扩展、工具、`instructions`、`maxTurns`），按名字
   引用已安装的扩展/工具；模型与工作目录仍由会话设置独立控制。解析结果写进 `pi.agent`，

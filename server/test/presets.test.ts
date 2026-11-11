@@ -92,6 +92,27 @@ describe("预设：配置解析与创建会话", () => {
 		expect(agent.maxTurns).toBe(128);
 	});
 
+	it("tools 与 extensions 是两个独立轴：只过滤 tools 时扩展的提示词段仍在", async () => {
+		const app = createApp(stella);
+		// 该用例的配置文件里 readonly 只写了 tools:["read"]、没写 extensions
+		const created = await app.request("/api/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ preset: "readonly" }),
+		});
+		const { id } = (await created.json()) as { id: number };
+		const conversation = await stella.harness.conversation(id as ConversationId, BACKGROUND_CONTEXT);
+		const agent = await conversation!.agent(BACKGROUND_CONTEXT);
+
+		// 工具被裁剪
+		expect(agent.tools.map((tool) => tool.name)).toEqual(["read"]);
+		// 但扩展仍全部装载（extensions 为 undefined = 跟随宿主默认）：
+		// 这是刻意保留的语义——预设的两个轴互不推导，配置者要自己保持一致。
+		expect(agent.extensions.map((extension) => extension.name)).toEqual(
+			expect.arrayContaining(["stella-persona", "codemode"]),
+		);
+	});
+
 	it("未知预设返回 400", async () => {
 		const app = createApp(stella);
 		const response = await app.request("/api/conversations", {
