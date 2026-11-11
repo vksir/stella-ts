@@ -1,26 +1,28 @@
 {
-  "name": "stella",
-  "private": true,
-  "version": "0.1.0",
-  "description": "Stella：万用日常型 Web Agent",
-  "type": "module",
-  "workspaces": [
-    "server",
-    "web"
-  ],
-  "scripts": {
-    "dev": "concurrently -k -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
-    "dev:server": "npm run dev --workspace @stella/server",
-    "dev:web": "npm run dev --workspace @stella/web",
-    "build": "npm run build --workspaces --if-present",
-    "start": "npm run start --workspace @stella/server",
-    "test": "npm run test --workspace @stella/server",
-    "typecheck": "npm run typecheck --workspaces --if-present"
-  },
-  "devDependencies": {
-    "concurrently": "^9.1.0"
-  },
-  "engines": {
-    "node": ">=24"
-  }
+	"name": "stella",
+	"private": true,
+	"version": "0.1.0",
+	"description": "Stella：万用日常型 Web Agent",
+	"type": "module",
+	"workspaces": [
+		"server",
+		"web"
+	],
+	"scripts": {
+		"dev": "concurrently -k -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+		"dev:server": "npm run dev --workspace @stella/server",
+		"dev:web": "npm run dev --workspace @stella/web",
+		"build": "npm run build --workspaces --if-present",
+		"start": "npm run start --workspace @stella/server",
+		"test": "npm run test --workspace @stella/server && npm run test --workspace @stella/web",
+		"typecheck": "npm run typecheck --workspaces --if-present",
+		"test:server": "npm run test --workspace @stella/server",
+		"test:web": "npm run test --workspace @stella/web"
+	},
+	"devDependencies": {
+		"concurrently": "^9.1.0"
+	},
+	"engines": {
+		"node": ">=24"
+	}
 }
