@@ -36,6 +36,7 @@ import {
 	resultText,
 } from "../api";
 import { failureCardText, stoppedText, summarizeToolCall } from "./labels";
+import { NodeBus, Source } from "./node-bus";
 import { Transcript } from "./transcript";
 
 export { failureCardText, stoppedText };
@@ -99,30 +100,6 @@ export interface AppSnapshot {
 }
 
 // —— 微型 Source：引用不变不通知 ——
-
-class Source<T> {
-	private listeners = new Set<() => void>();
-	private snap: T;
-
-	constructor(initial: T) {
-		this.snap = initial;
-	}
-
-	get = (): T => this.snap;
-
-	set(next: T): void {
-		if (Object.is(next, this.snap)) return;
-		this.snap = next;
-		for (const listener of [...this.listeners]) listener();
-	}
-
-	subscribe = (listener: () => void): (() => void) => {
-		this.listeners.add(listener);
-		return () => {
-			this.listeners.delete(listener);
-		};
-	};
-}
 
 const BUSY_ENTER_KEY = "stella-busy-enter";
 const PRESET_KEY = "stella-preset";
@@ -241,7 +218,8 @@ export class AppStore {
 
 	// flow 级
 	private keys = new Source<readonly string[]>([]);
-	private nodeSources = new Map<string, Source<FlowNode | null>>();
+	/** 每个 key 一个节点快照 + 订阅桶（桥接已在 NodeBus 内完成）。 */
+	private nodes = new NodeBus<FlowNode>();
 
 	// 内部状态（派生快照用）
 	private view: SseView | null = null;
@@ -282,23 +260,9 @@ export class AppStore {
 	subscribeKeys = this.keys.subscribe;
 	getKeys = this.keys.get;
 
-	subscribeNode = (key: string, listener: () => void): (() => void) => {
-		const name = nodeListenerKey(key);
-		let set = this.listeners.get(name);
-		if (set === undefined) {
-			set = new Set();
-			this.listeners.set(name, set);
-		}
-		const bucket = set;
-		bucket.add(listener);
-		return () => {
-			bucket.delete(listener);
-			// 订阅集空了就删掉这个 key：否则长时间切换会话会留下几百个空 Set
-			if (bucket.size === 0) this.listeners.delete(name);
-		};
-	};
+	subscribeNode = (key: string, listener: () => void): (() => void) => this.nodes.subscribe(key, listener);
 
-	getNode = (key: string): FlowNode | null => this.nodeSources.get(key)?.get() ?? null;
+	getNode = (key: string): FlowNode | null => this.nodes.get(key);
 
 	/** UI 事件（focus-input / scroll-instant）。 */
 	on(event: string, listener: () => void): () => void {
@@ -322,14 +286,6 @@ export class AppStore {
 		this.app.set({ ...this.app.get(), ...patch });
 	}
 
-	private nodeSource(key: string): Source<FlowNode | null> {
-		let source = this.nodeSources.get(key);
-		if (source === undefined) {
-			source = new Source<FlowNode | null>(null);
-			this.nodeSources.set(key, source);
-		}
-		return source;
-	}
 
 	// —— toast / 确认 ——
 
@@ -426,11 +382,11 @@ export class AppStore {
 	}
 
 	private clearFlow(): void {
-		for (const key of this.keys.get()) this.nodeSource(key).set(null);
+		for (const key of this.keys.get()) this.nodes.set(key, null);
 		this.keys.set([]);
 		// 节点源只对当前会话有效（切换会话时 ChatFlow 会整体重挂）。不清掉的话，
 		// 每切换一次就留下上一条会话的全部快照（含消息正文），属于真实内存泄漏。
-		this.nodeSources.clear();
+		this.nodes.clear();
 	}
 
 	async loadSettings(id: number): Promise<void> {
@@ -587,19 +543,22 @@ export class AppStore {
 		const streamingText = busy && partial !== undefined && !answerCommitted ? extractText(partial) : undefined;
 		if (streamingText !== undefined && !structural) {
 			this.pendingStreamingText = streamingText;
+			// 首次出现流式文本时，结构化派生可能已经跑过（那时 partial 还是空的），
+			// keys 里没有 streaming 座位 —— 必须补上，否则节点更新了却没人渲染。
+			this.ensureStreamingSeat();
 			if (!this.framePending) {
 				this.framePending = true;
 				requestAnimationFrame(() => {
 					this.framePending = false;
 					const text = this.pendingStreamingText;
-					if (text !== undefined) this.nodeSource("streaming").set({ key: "streaming", type: "streaming", text });
+					if (text !== undefined) this.nodes.set("streaming", { key: "streaming", type: "streaming", text });
 				});
 			}
 			return;
 		}
 		this.pendingStreamingText = streamingText;
-		if (streamingText === undefined && this.nodeSources.get("streaming")?.get() != null) {
-			this.nodeSource("streaming").set(null);
+		if (streamingText === undefined && this.nodes.get("streaming") != null) {
+			this.nodes.set("streaming", null);
 		}
 
 		if (!structural) {
@@ -732,14 +691,23 @@ export class AppStore {
 		const keyList = nodes.map((node) => node.key);
 		const byKey = new Map(nodes.map((node) => [node.key, node]));
 		for (const key of this.keys.get()) {
-			if (!byKey.has(key)) this.nodeSource(key).set(null);
+			if (!byKey.has(key)) this.nodes.set(key, null);
 		}
 		for (const node of nodes) {
-			const source = this.nodeSource(node.key);
+			const source = this.nodes.source(node.key);
 			const prev = source.get();
 			if (prev === null || prev.type !== node.type || !shallowEqualNode(prev, node)) source.set(node);
 		}
 		this.keys.set(keyList);
+	}
+
+	/** 确保 keys 里有 streaming 座位（插在 running 之前，保持"状态行在末"的视觉顺序）。 */
+	private ensureStreamingSeat(): void {
+		const keys = this.keys.get();
+		if (keys.includes("streaming")) return;
+		const runningAt = keys.indexOf("running");
+		const next = runningAt < 0 ? [...keys, "streaming"] : [...keys.slice(0, runningAt), "streaming", ...keys.slice(runningAt)];
+		this.keys.set(next);
 	}
 
 	/** assistant 条目 id → 其所属运行的用时（取 ≤ id 的最大 run.first）。 */
@@ -767,12 +735,10 @@ export class AppStore {
 		}
 		for (const [callId, slot] of liveSlots) {
 			const key = `t:${callId}`;
-			const source = this.nodeSources.get(key);
-			if (source === undefined) continue;
-			const prev = source.get();
+			const prev = this.nodes.get(key);
 			if (prev?.type !== "tool") continue;
 			const candidate: FlowNode = { key, type: "tool", card: slotCard(slot, partialToolCall(partial, callId)) };
-			if (!shallowEqualNode(prev, candidate)) source.set(candidate);
+			if (!shallowEqualNode(prev, candidate)) this.nodes.set(key, candidate);
 		}
 		// assistant 条目内的工具行（运行态 output 变化；done 落定走结构变更重派生）
 		for (const entry of entries) {
@@ -781,8 +747,7 @@ export class AppStore {
 			const blocks = Array.isArray(message?.content) ? message.content : [];
 			if (!blocks.some((block) => block.type === "toolCall")) continue;
 			const key = `e:${entry.id}`;
-			const source = this.nodeSources.get(key);
-			const prev = source?.get();
+			const prev = this.nodes.get(key);
 			if (prev?.type !== "assistant") continue;
 			const calls: ToolCard[] = [];
 			for (const block of blocks) {
@@ -790,7 +755,7 @@ export class AppStore {
 				calls.push(callCard(block, toolResults.get(block.id), liveSlots.get(block.id)));
 			}
 			const candidate: FlowNode = { ...prev, calls };
-			if (!shallowEqualNode(prev, candidate)) source?.set(candidate);
+			if (!shallowEqualNode(prev, candidate)) this.nodes.set(key, candidate);
 		}
 	}
 
@@ -1145,11 +1110,6 @@ export class AppStore {
 	showError(error: unknown): void {
 		this.showToast(error instanceof Error ? error.message : String(error));
 	}
-}
-
-/** 节点订阅在 listeners 里的键（加前缀，避免与 `@event` 事件键或裸 key 撞名）。 */
-function nodeListenerKey(key: string): string {
-	return `node:${key}`;
 }
 
 /** 节点浅比较（calls 数组逐项比较；text 直接比较）。 */

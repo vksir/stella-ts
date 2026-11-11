@@ -15,4 +15,10 @@ createRoot(document.getElementById("root")!).render(
 	</StrictMode>,
 );
 
+// DEV-only 诊断句柄：排查"增量更新没生效"这类问题时可从控制台直接读 store 内部状态。
+// 生产构建会被 Vite 静态替换成 false 并摇掉。
+if (import.meta.env.DEV) {
+	(window as unknown as { __stellaStore?: typeof store }).__stellaStore = store;
+}
+
 void store.boot().catch((error) => store.showError(error));
