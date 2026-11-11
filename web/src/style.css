@@ -657,6 +657,20 @@ body {
 	}
 }
 
+/* 新会话快捷键键帽（DSH 新会话行右侧 ⌘⌥N） */
+.new-session-key {
+	flex: none;
+	margin-left: auto;
+	padding: 0 5px;
+	border-radius: 4px;
+	background: var(--interactive-hover);
+	color: var(--label-caption);
+	font-size: 11px;
+	line-height: 16px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
 .new-session-content {
 	display: flex;
 	width: 100%;
@@ -1128,7 +1142,7 @@ body {
 	display: flex;
 	align-items: stretch;
 	gap: 4px;
-	min-height: 35px;
+	min-height: 33px;
 	margin-top: 2px;
 }
 
@@ -1336,12 +1350,23 @@ body {
 }
 
 .msg-tokens {
-	font-size: 11px;
+	display: inline-flex;
+	align-items: center;
+	height: 28px;
+	padding: 6px 8px;
+	border-radius: var(--radius-sm);
+	font-size: 12px;
 	line-height: 16px;
-	color: var(--label-caption);
+	color: var(--label-tertiary);
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
-	padding-right: 4px;
+	transition: background-color 100ms ease;
+}
+
+@media (hover: hover) {
+	.msg-tokens:hover {
+		background: var(--interactive-hover);
+	}
 }
 
 /* 消息操作行（DSH MessageIconActions：h28 行、28×28 hit、svg 15、hover 显现） */
@@ -1502,10 +1527,19 @@ body {
 }
 
 .md a {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 4px;
 	color: var(--link);
 	text-decoration: none;
 	font-weight: 500;
 	overflow-wrap: anywhere;
+}
+
+.md a svg {
+	flex: none;
+	align-self: center;
+	opacity: 0.85;
 }
 
 @media (hover: hover) {
@@ -3215,6 +3249,37 @@ body.sidebar-collapsed .preset-row {
 	max-width: var(--composer-card-max-width, 820px);
 	margin: 0 auto;
 	padding: 0 18px 6px;
+}
+
+/* dock 胶囊 chip（DSH：3 个 chip，高 26，pad 4px 0 0） */
+.usage-chips {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.usage-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 22px;
+	padding: 0 8px;
+	border-radius: 999px;
+	corner-shape: round;
+	background: var(--md-code-block);
+	color: var(--label-tertiary);
+	font-size: 11px;
+	line-height: 16px;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
+.usage-chip svg {
+	flex: none;
+	opacity: 0.9;
 }
 
 .usage-trigger {

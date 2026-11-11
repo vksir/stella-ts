@@ -478,6 +478,7 @@ function UsageMeter(): ReactNode {
 	const [open, setOpen] = useState(false);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const usageDoc = useSyncExternalStore(store.subscribeApp, () => store.getUsageDoc());
+	const stats = useSyncExternalStore(store.subscribeApp, () => store.getRunStats());
 	const usage = summarizeUsage(usageDoc);
 
 	useEffect(() => {
@@ -494,31 +495,37 @@ function UsageMeter(): ReactNode {
 	}
 	const percent = app.context?.percent ?? null;
 	const percentText = percent === null ? "—" : `${Math.round(percent)}%`;
+	// 缓存命中率：cacheRead / (input + cacheRead)
+	const cacheRead = Object.values(usageDoc?.models ?? {}).reduce((sum, u) => sum + (u.cacheRead ?? 0), 0);
+	const inputTokens = Object.values(usageDoc?.models ?? {}).reduce((sum, u) => sum + (u.input ?? 0), 0);
+	const cacheRate = cacheRead + inputTokens > 0 ? Math.round((cacheRead / (cacheRead + inputTokens)) * 100) : null;
 
 	return (
 		<div id="usage-meter" className="usage-meter" ref={rootRef}>
-			<button
-				type="button"
-				className="usage-trigger"
-				aria-expanded={open}
-				title={`上下文已用 ${percentText}${app.context?.estimated === true ? "（按字符估算）" : ""}`}
-				onClick={() => setOpen(!open)}
-			>
-				<ContextRing percent={percent} />
-				<span className="usage-percent">{percentText}</span>
+			<div className="usage-chips">
+				{stats.steps > 0 && (
+					<span className="usage-chip" title="本会话的轮次与回答步数">
+						{`${stats.rounds} 轮 ${stats.steps} 步`}
+					</span>
+				)}
 				{usage.tokens > 0 && (
-					<>
-						<span className="usage-sep">·</span>
-						<span className="usage-tokens">{formatTokens(usage.tokens)}</span>
-					</>
+					<span className="usage-chip" title="累计 token 与缓存命中率">
+						{`${formatTokens(usage.tokens)} tok`}
+						{cacheRate !== null && ` · 缓存命中 ${cacheRate}%`}
+					</span>
 				)}
-				{usage.cost > 0 && (
-					<>
-						<span className="usage-sep">·</span>
-						<span className="usage-cost">{formatCost(usage.cost)}</span>
-					</>
-				)}
-			</button>
+				<button
+					type="button"
+					className="usage-chip usage-trigger"
+					aria-expanded={open}
+					title={`上下文已用 ${percentText}${app.context?.estimated === true ? "（按字符估算）" : ""}，点开看分解`}
+					onClick={() => setOpen(!open)}
+				>
+					<ContextRing percent={percent} />
+					<span className="usage-percent">{percentText}</span>
+					{usage.cost > 0 && <span className="usage-cost">{formatCost(usage.cost)}</span>}
+				</button>
+			</div>
 			{open && <UsagePanel context={app.context} usageDoc={usageDoc} />}
 		</div>
 	);

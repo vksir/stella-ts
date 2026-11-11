@@ -47,6 +47,10 @@ function storeSidebarCollapsed(collapsed: boolean): void {
 	}
 }
 
+function isMac(): boolean {
+	return /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+}
+
 function initialCollapsed(): boolean {
 	return loadSidebarCollapsed() ?? window.innerWidth < 1024;
 }
@@ -148,6 +152,7 @@ const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): React
 						<span className="new-session-content">
 							<PlusIcon />
 							<span className="new-session-label">新会话</span>
+							{!collapsed && <span className="new-session-key">{isMac() ? "⌘⌥N" : "Ctrl+Alt+N"}</span>}
 						</span>
 					</button>
 					{app.presets.length > 1 && (
@@ -454,6 +459,18 @@ export function App(): ReactNode {
 	useEffect(() => {
 		if (loadSidebarCollapsed() === undefined) setCollapsed(!desktop || window.innerWidth < 1024);
 	}, [desktop]);
+
+	// 新会话快捷键：Ctrl/Cmd + Alt + N（与侧栏键帽一致）
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent): void => {
+			if ((e.ctrlKey || e.metaKey) && e.altKey && e.key.toLowerCase() === "n") {
+				e.preventDefault();
+				void store.createConversation().catch((error) => store.showError(error));
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, []);
 
 	// dataset 同步给 CSS（grid 轨道 / rail 显隐 / 抽屉）
 	useEffect(() => {

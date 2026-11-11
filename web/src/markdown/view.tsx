@@ -81,6 +81,19 @@ function renderInline(nodes: readonly PhrasingContent[] | undefined, keyBase = "
 				if (href === undefined) return <span key={key}>{renderInline(node.children, `${key}-`)}</span>;
 				return (
 					<a key={key} href={href} target="_blank" rel="noreferrer noopener">
+						<svg
+							viewBox="0 0 24 24"
+							width="12"
+							height="12"
+							fill="none"
+							stroke="currentColor"
+							strokeWidth="1.6"
+							strokeLinecap="round"
+							aria-hidden="true"
+						>
+							<circle cx="12" cy="12" r="9.5" />
+							<path d="M2.5 12h19M12 2.5c2.6 2.6 2.6 16.4 0 19M12 2.5c-2.6 2.6-2.6 16.4 0 19" />
+						</svg>
 						{renderInline(node.children, `${key}-`)}
 					</a>
 				);

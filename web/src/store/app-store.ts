@@ -881,9 +881,23 @@ export class AppStore {
 			.map((item) => ({ id: item.id, mode: item.mode, text: inboxText(item) }));
 	}
 
+	/** 用量文档（引用稳定：同一 view 的 docs 对象不变）。 */
 	getUsageDoc(): UsageDoc | undefined {
 		return this.view?.docs["pi.usage"];
 	}
+
+	/** 轮次数与回答步数（引用稳定：值不变则返回同一快照，供 useSyncExternalStore 使用）。 */
+	getRunStats(): { rounds: number; steps: number } {
+		const entries = this.transcript.items.flatMap((item) => (item.kind === "entry" ? [item.entry] : []));
+		const rounds = entries.filter((entry) => entry.kind === "pi.user").length;
+		const steps = entries.filter((entry) => entry.kind === "pi.assistant").length;
+		const prev = this.runStats;
+		if (prev.rounds === rounds && prev.steps === steps) return prev;
+		this.runStats = { rounds, steps };
+		return this.runStats;
+	}
+
+	private runStats: { rounds: number; steps: number } = { rounds: 0, steps: 0 };
 
 	/** 轨迹视图：全部工具调用按时间线（含运行中槽位）。 */
 	getTraceCards(): { key: string; card: ToolCard }[] {
