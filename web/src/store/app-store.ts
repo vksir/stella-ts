@@ -438,11 +438,21 @@ export class AppStore {
 			if (next === undefined) {
 				this.source?.close();
 				this.source = undefined;
+				window.clearInterval(this.watchdog);
+				this.watchdog = undefined;
 				this.view = null;
 				this.transcript.reset();
 				this.clearFlow();
+				// 先落 "没有会话" 的身份，再 publish：publish 会据此派生 blank / heroEmpty
+				//（反过来会让 publish 读到旧 conversationId，空白态按钮与禁用态都不出现）
+				this.patchApp({
+					conversationId: undefined,
+					connected: false,
+					context: null,
+					preset: null,
+					workspace: undefined,
+				});
 				this.publish();
-				this.patchApp({ conversationId: undefined, connected: false, context: null, preset: null, workspace: undefined });
 			} else {
 				this.switchTo(next);
 			}
