@@ -1,11 +1,9 @@
 /**
  * 流式高亮会话单测（`src/markdown/streaming-highlight.tsx`）。
  *
- * 用假 highlighter 驱动，验证四件事（这些是"流式不卡且不闪"的前提）：
- * 1. 只有**整行**进缓存，末行（还在增长）保持纯文本；
- * 2. 跨批 grammar 状态续接（多行字符串这类语法在流式中也正确）；
- * 3. 已缓存批次的元素**引用复用**（React 按引用跳过重渲，不会每 chunk 重算全部）；
- * 4. 两道护栏：超长行不分词、超行数上限整体退回纯文本。
+ * 锁的是**行级锁步**语义：早期按 N 行分批，流式里着色密度只有 11%，落定瞬间整块补色
+ * （评审实测 dsh 是 84%）。四条断言：每完成一行就分词、行间 grammar 状态续接、
+ * 已缓存行元素引用复用、末行改写只重算末行。
  */
 
 import { describe, expect, it } from "vitest";
@@ -17,124 +15,120 @@ interface Call {
 	hadState: boolean;
 }
 
-/** 假 highlighter：按行产出 token，并记录 grammar 状态的传递情况。 */
 function fakeHighlighter() {
 	const calls: Call[] = [];
-	let tokenize = 0;
 	const highlighter = {
 		codeToTokensWithThemes(code: string, options: { grammarState?: unknown }) {
 			calls.push({ code, hadState: options.grammarState !== undefined });
-			tokenize += 1;
 			return code.split("\n").map((line) => [
-				{ content: line, variants: { light: { color: "#111111" }, dark: { color: "#eeeeee" } } },
+				{ content: line || " ", variants: { light: { color: "#111111" }, dark: { color: "#eeeeee" } } },
 			]);
 		},
 		getLastGrammarState(code: string) {
 			return { marker: `state:${code.length}` };
 		},
 	} as never;
-	return { highlighter, calls, tokenizeCount: () => tokenize };
+	return { highlighter, calls };
 }
 
 const THEMES = { light: "stella-light", dark: "stella-dark" };
 
-describe("流式高亮会话", () => {
-	it("末行（仍在增长）不进 token 缓存，保持纯文本", () => {
+describe("流式高亮会话（行级锁步）", () => {
+	it("每完成一行就分词，且逐行续接 grammar 状态", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		// 只有一行且没有换行 → 没有"完成的整行"，不应有任何分词调用
-		const out = session.render(highlighter, "const a = 1", "ts", THEMES);
-		expect(calls.length).toBe(0);
-		expect(renderToStaticMarkup(out as never)).toContain("const a = 1");
+		session.render(highlighter, "a\nb\nc\n", "ts", THEMES);
+
+		expect(calls.map((c) => c.code)).toEqual(["a", "b", "c"]);
+		expect(calls.map((c) => c.hadState)).toEqual([false, true, true]);
 	});
 
-	it("满一批（BATCH_LINES=8 行）才分词，且下批续接 grammar 状态", () => {
+	it("文本增长时只对新增行分词（已缓存行不重算）", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		const lines = Array.from({ length: 9 }, (_, i) => `line${i}`);
-		// 9 行 + 末尾空行（split 多一个空串 → 9 个完成行 = 1 满批）
-		const code = `${lines.join("\n")}\n`;
-
-		session.render(highlighter, code, "ts", THEMES);
-		// 第一批 8 行分词（第 1 次调用），状态为空
-		expect(calls.length).toBe(1);
-		expect(calls[0]?.code.split("\n").length).toBe(8);
-		expect(calls[0]?.hadState).toBe(false);
-
-		// 再长一批：第 2 次调用应带上第一批末尾的 grammar 状态
-		const more = Array.from({ length: 9 }, (_, i) => `line${i + 9}`);
-		session.render(highlighter, `${code}${more.join("\n")}\n`, "ts", THEMES);
-		expect(calls.length).toBe(2);
-		expect(calls[1]?.hadState).toBe(true);
-	});
-
-	it("已缓存批次不重复分词（同长度追加时命中缓存）", () => {
-		const { highlighter, calls } = fakeHighlighter();
-		const session = new StreamingHighlightSession();
-		const lines = Array.from({ length: 40 }, (_, i) => `l${i}`);
-		const code = `${lines.join("\n")}\n`;
-		session.render(highlighter, code, "ts", THEMES);
+		session.render(highlighter, "l1\nl2\n", "ts", THEMES);
 		const after = calls.length;
-		// 同一份 code 再渲染一次：全部命中缓存，不再分词
-		session.render(highlighter, code, "ts", THEMES);
-		expect(calls.length).toBe(after);
+
+		session.render(highlighter, "l1\nl2\nl3\nl4\n", "ts", THEMES);
+		expect(calls.slice(after).map((c) => c.code)).toEqual(["l3", "l4"]);
 	});
 
-	it("末行内容改写时，受影响批次被丢弃并重算（保守但正确）", () => {
+	it("末行未变不重算，增长时只重算末行", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		const base = Array.from({ length: 9 }, (_, i) => `l${i}`);
-		session.render(highlighter, `${base.join("\n")}\n`, "ts", THEMES);
-		const firstRound = calls.length;
+		session.render(highlighter, "head\nconst a", "ts", THEMES);
+		const afterFirst = calls.length;
 
-		// 第 8 行（0-based 7）被改写 → 该批失效
-		const changed = [...base];
-		changed[7] = "l7-changed";
-		session.render(highlighter, `${changed.join("\n")}\n`, "ts", THEMES);
-		expect(calls.length).toBeGreaterThan(firstRound);
+		session.render(highlighter, "head\nconst a", "ts", THEMES);
+		expect(calls.length).toBe(afterFirst);
+
+		session.render(highlighter, "head\nconst a = 1", "ts", THEMES);
+		expect(calls.slice(afterFirst).map((c) => c.code)).toEqual(["const a = 1"]);
 	});
 
-	it("超过行数上限时整体放弃流式高亮（返回 null，交给落定路径）", () => {
+	it("末行被改写时回退到该行重算，之前的行保持", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		const code = `${Array.from({ length: 260 }, (_, i) => `l${i}`).join("\n")}\n`;
-		expect(session.render(highlighter, code, "ts", THEMES)).toBe(null);
+		session.render(highlighter, "l1\nl2\nl3\n", "ts", THEMES);
+		const after = calls.length;
+
+		session.render(highlighter, "l1\nl2-changed\nl3\n", "ts", THEMES);
+		expect(calls.slice(after).map((c) => c.code)).toEqual(["l2-changed", "l3"]);
+	});
+
+	it("渲染结果包含全部行，不漏不重", () => {
+		const { highlighter } = fakeHighlighter();
+		const session = new StreamingHighlightSession();
+		const out = session.render(highlighter, "alpha\nbeta\ngamma", "ts", THEMES);
+		const html = renderToStaticMarkup(out as never);
+		for (const word of ["alpha", "beta", "gamma"]) expect(html).toContain(word);
+		expect((html.match(/alpha/g) ?? []).length).toBe(1);
+	});
+
+	it("超过行数上限时整体退回纯文本（返回 null）", () => {
+		const { highlighter, calls } = fakeHighlighter();
+		const session = new StreamingHighlightSession();
+		const many = Array.from({ length: 420 }, (_, i) => `l${i}`).join("\n");
+		expect(session.render(highlighter, `${many}\n`, "ts", THEMES)).toBe(null);
 		expect(calls.length).toBe(0);
 	});
 
-	it("超长行不分词（正则引擎最坏情况保护）", () => {
+	it("超长行退回纯文本（返回 null）", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
 		const long = "x".repeat(1200);
-		const code = `${long}\nmore\n`;
-		expect(session.render(highlighter, code, "ts", THEMES)).toBe(null);
+		expect(session.render(highlighter, `${long}\nok\n`, "ts", THEMES)).toBe(null);
 		expect(calls.length).toBe(0);
 	});
 
-	it("换语言或换主题会重置缓存（避免用错 grammar 续接）", () => {
+	it("换语言会重置缓存（避免用错 grammar 续接）", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		const code = `${Array.from({ length: 9 }, (_, i) => `l${i}`).join("\n")}\n`;
-		session.render(highlighter, code, "ts", THEMES);
+		session.render(highlighter, "a\nb\n", "ts", THEMES);
 		const afterTs = calls.length;
-		session.render(highlighter, code, "python", THEMES);
-		expect(calls.length).toBe(afterTs + 1);
-		expect(calls[calls.length - 1]?.hadState).toBe(false); // 新语言不带旧状态
+
+		session.render(highlighter, "a\nb\n", "python", THEMES);
+		expect(calls.length).toBe(afterTs + 2);
+		expect(calls[afterTs]?.hadState).toBe(false);
+		expect(calls[calls.length - 1]?.hadState).toBe(true);
 	});
 
-	it("分词失败时回落纯文本，不抛错（流式中断也要能看）", () => {
-		const broken = {
-			codeToTokensWithThemes() {
-				throw new Error("boom");
+	it("分词失败时该行按纯文本渲染，不抛错不丢字", () => {
+		let failNext = true;
+		const highlighter = {
+			codeToTokensWithThemes(code: string) {
+				if (failNext) {
+					failNext = false;
+					throw new Error("boom");
+				}
+				return [[{ content: code, variants: { light: { color: "#111" }, dark: { color: "#eee" } } }]];
 			},
-			getLastGrammarState() {
-				return {};
-			},
+			getLastGrammarState: () => ({}),
 		} as never;
 		const session = new StreamingHighlightSession();
-		const code = `${Array.from({ length: 9 }, (_, i) => `l${i}`).join("\n")}\n`;
-		const out = session.render(broken, code, "ts", THEMES);
-		expect(out).not.toBe(null);
-		expect(renderToStaticMarkup(out as never)).toContain("l0");
+		const out = session.render(highlighter, "alpha\nbeta\n", "ts", THEMES);
+		const html = renderToStaticMarkup(out as never);
+		expect(html).toContain("alpha");
+		expect(html).toContain("beta");
 	});
 });
