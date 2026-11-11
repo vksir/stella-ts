@@ -6,7 +6,7 @@
  * 每个块组件按 ast 节点引用 memo——冻结块引用不变则子树不重渲。
  */
 
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useState, type ReactNode } from "react";
 import type {
 	Blockquote,
 	Code,
@@ -56,13 +56,21 @@ function renderInline(nodes: readonly PhrasingContent[] | undefined, keyBase = "
 		const key = `${keyBase}${index}`;
 		switch (node.type) {
 			case "text": {
-				const parts = (node as Text).value.split("\n");
-				return parts.map((part, partIndex) => (
-					<span key={`${key}-${partIndex}`}>
-						{partIndex > 0 && <br />}
-						{part}
-					</span>
-				));
+				const value = (node as Text).value;
+				// 无软换行时直接返回文本（不包 span）：DOM 更小、文本选择更自然；
+				// 有软换行才需穿插 <br/>，用 Fragment 承载。
+				if (!value.includes("\n")) return value;
+				const parts = value.split("\n");
+				return (
+					<Fragment key={key}>
+						{parts.map((part, partIndex) => (
+							<Fragment key={partIndex}>
+								{partIndex > 0 && <br />}
+								{part}
+							</Fragment>
+						))}
+					</Fragment>
+				);
 			}
 			case "inlineCode":
 				return (
@@ -236,7 +244,7 @@ function TableView({ node }: { node: Table }): ReactNode {
 function ListView({ node }: { node: List }): ReactNode {
 	const Tag = node.ordered ? "ol" : "ul";
 	return (
-		<Tag className={node.ordered && node.start !== null && node.start !== 1 ? "md-start" : undefined} start={node.ordered ? (node.start ?? 1) : undefined}>
+		<Tag start={node.ordered ? (node.start ?? 1) : undefined}>
 			{node.children.map((item: ListItem, index) => (
 				<li key={index}>
 					{item.checked === true || item.checked === false ? (

@@ -306,6 +306,21 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 	const followingRef = useRef(true);
 	const [view, setView] = useState<"chat" | "trace">("chat");
 
+	// Tab 行键盘操作：←/→ 在家（roving tabindex），Home/End 跳首尾（WAI-ARIA tabs 模式）
+	const onTabsKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+		const order: ("chat" | "trace")[] = ["chat", "trace"];
+		const index = order.indexOf(view);
+		let next: "chat" | "trace" | undefined;
+		if (e.key === "ArrowRight") next = order[(index + 1) % order.length];
+		else if (e.key === "ArrowLeft") next = order[(index - 1 + order.length) % order.length];
+		else if (e.key === "Home") next = order[0];
+		else if (e.key === "End") next = order[order.length - 1];
+		if (next === undefined) return;
+		e.preventDefault();
+		setView(next);
+		requestAnimationFrame(() => document.getElementById(`tab-${next}`)?.focus());
+	};
+
 	// scroll follow：意图（nearBottom 阈值）与内容增长分离
 	useEffect(() => {
 		const scroller = scrollerRef.current;
@@ -380,18 +395,43 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 					)}
 				</div>
 				{!compact && (
-					<div className="tabs" role="tablist" aria-label="会话视图">
-						<button type="button" className="tab" role="tab" aria-selected={view === "chat"} onClick={() => setView("chat")}>
+					<div className="tabs" role="tablist" aria-label="会话视图" onKeyDown={onTabsKeyDown}>
+						<button
+							type="button"
+							role="tab"
+							id="tab-chat"
+							className="tab"
+							aria-selected={view === "chat"}
+							aria-controls="messages"
+							tabIndex={view === "chat" ? 0 : -1}
+							onClick={() => setView("chat")}
+						>
 							对话
 						</button>
-						<button type="button" className="tab" role="tab" aria-selected={view === "trace"} onClick={() => setView("trace")}>
+						<button
+							type="button"
+							role="tab"
+							id="tab-trace"
+							className="tab"
+							aria-selected={view === "trace"}
+							aria-controls="messages"
+							tabIndex={view === "trace" ? 0 : -1}
+							onClick={() => setView("trace")}
+						>
 							轨迹
 						</button>
 					</div>
 				)}
 			</header>
 			<div id="scroll-body" className="scroll-body" ref={scrollerRef}>
-				<main id="messages" className="messages" aria-live="polite">
+				<main
+					id="messages"
+					className="messages"
+					role="tabpanel"
+					aria-labelledby={`tab-${view}`}
+					tabIndex={-1}
+					aria-live="polite"
+				>
 					{view === "chat" ? <ChatFlow columnRef={columnRef} /> : <TraceView />}
 				</main>
 				{heroMode ? (
