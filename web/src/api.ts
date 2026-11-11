@@ -18,6 +18,12 @@ export interface ContentBlock {
 export interface ModelMessage {
 	role: string;
 	content: string | ContentBlock[];
+	/** 该条消息的时间戳（epoch 毫秒）；用户与助手消息都有。 */
+	timestamp?: number;
+	/** 助手消息的本次用量（token 与成本）。 */
+	usage?: TokenUsage;
+	/** 助手消息的本次耗时（毫秒，来源侧测得）。 */
+	durationMs?: number;
 	/** 回答条目的停止原因："error" 表示这次尝试失败（pi-durable 保留的错误 attempt）。 */
 	stopReason?: string;
 	/** stopReason 为 "error" 时的底层错误文本。 */

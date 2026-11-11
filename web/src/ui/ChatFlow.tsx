@@ -71,9 +71,18 @@ export function TraceView(): ReactNode {
 function NodeView({ node, conversationId }: { node: FlowNode; conversationId: number }): ReactNode {
 	switch (node.type) {
 		case "user":
-			return <UserNode text={node.text} reveal={node.reveal} />;
+			return <UserNode text={node.text} reveal={node.reveal} timestamp={node.timestamp} />;
 		case "assistant":
-			return <AssistantNode text={node.text} calls={node.calls} reveal={node.reveal} durationMs={node.durationMs} />;
+			return (
+				<AssistantNode
+					text={node.text}
+					calls={node.calls}
+					reveal={node.reveal}
+					durationMs={node.durationMs}
+					timestamp={node.timestamp}
+					tokens={node.tokens}
+				/>
+			);
 		case "assistant-error":
 			return (
 				<div className="flow-item turn-error">
@@ -119,15 +128,33 @@ function NodeView({ node, conversationId }: { node: FlowNode; conversationId: nu
 	}
 }
 
+/** 消息时间：HH:mm（同一天）或 M/D HH:mm。 */
+function formatStamp(ts?: number): string {
+	if (ts === undefined || ts <= 0) return "";
+	const d = new Date(ts);
+	const pad = (n: number): string => String(n).padStart(2, "0");
+	const now = new Date();
+	const sameDay = d.toDateString() === now.toDateString();
+	const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
+/** token 用量：1.2K / 11.8K / 1.2M。 */
+function formatTokenCount(value: number): string {
+	if (value < 1000) return String(Math.round(value));
+	if (value < 1_000_000) return `${(value / 1000).toFixed(1)}K`;
+	return `${(value / 1_000_000).toFixed(2)}M`;
+}
+
 // —— 用户消息：右对齐浅蓝气泡 + 操作行 ——
 
-function UserNode({ text, reveal }: { text: string; reveal: boolean }): ReactNode {
+function UserNode({ text, reveal, timestamp }: { text: string; reveal: boolean; timestamp?: number }): ReactNode {
 	return (
 		<div className="flow-item msg-user" data-reveal={reveal ? undefined : "hover"}>
 			<div className="bubble-stack">
 				<div className="bubble">{text}</div>
 			</div>
-			<CopyActions text={text} />
+			<MessageActions text={text} timestamp={timestamp} />
 		</div>
 	);
 }
@@ -139,11 +166,15 @@ function AssistantNode({
 	calls,
 	reveal,
 	durationMs,
+	timestamp,
+	tokens,
 }: {
 	text: string;
 	calls: ToolCard[];
 	reveal: boolean;
 	durationMs?: number;
+	timestamp?: number;
+	tokens?: number;
 }): ReactNode {
 	const parser = useRef<IncrementalMarkdown | null>(null);
 	if (parser.current === null) parser.current = new IncrementalMarkdown();
@@ -172,7 +203,7 @@ function AssistantNode({
 					{text.length === 0 && calls.length === 0 && <span className="flow-placeholder">（无文本内容）</span>}
 				</div>
 			)}
-			<CopyActions text={text} />
+			<MessageActions text={text} timestamp={timestamp} tokens={tokens} />
 		</div>
 	);
 }
@@ -192,11 +223,26 @@ function StreamingNode({ text }: { text: string }): ReactNode {
 
 // —— 操作行（复制） ——
 
-function CopyActions({ text }: { text: string }): ReactNode | null {
+function MessageActions({
+	text,
+	timestamp,
+	tokens,
+}: {
+	text: string;
+	timestamp?: number;
+	tokens?: number;
+}): ReactNode | null {
 	const [copied, setCopied] = useState(false);
-	if (text.length === 0) return null;
+	const stamp = formatStamp(timestamp);
+	if (text.length === 0 && stamp.length === 0) return null;
 	return (
 		<div className="msg-actions">
+			{stamp.length > 0 && <span className="msg-stamp">{stamp}</span>}
+			{tokens !== undefined && tokens > 0 && (
+				<span className="msg-tokens" title="本条回答的 token 用量">
+					{`用量 ${formatTokenCount(tokens)} tok`}
+				</span>
+			)}
 			<button
 				type="button"
 				className="action"

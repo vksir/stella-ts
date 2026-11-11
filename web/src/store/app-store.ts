@@ -50,8 +50,17 @@ export interface ToolCard {
 }
 
 export type FlowNode =
-	| { key: string; type: "user"; text: string; reveal: boolean }
-	| { key: string; type: "assistant"; text: string; calls: ToolCard[]; reveal: boolean; durationMs?: number }
+	| { key: string; type: "user"; text: string; reveal: boolean; timestamp?: number }
+	| {
+			key: string;
+			type: "assistant";
+			text: string;
+			calls: ToolCard[];
+			reveal: boolean;
+			durationMs?: number;
+			timestamp?: number;
+			tokens?: number;
+	  }
 	| { key: string; type: "assistant-error"; message: string }
 	| { key: string; type: "streaming"; text: string }
 	| { key: string; type: "tool"; card: ToolCard }
@@ -634,11 +643,13 @@ export class AppStore {
 			const entry = item.entry;
 			switch (entry.kind) {
 				case "pi.user": {
+					const userMsg = entry.model?.[0];
 					pushEntryNode(entry, {
 						key: `e:${entry.id}`,
 						type: "user",
-						text: extractText(entry.model?.[0]),
+						text: extractText(userMsg),
 						reveal: false,
+						timestamp: userMsg?.timestamp,
 					});
 					break;
 				}
@@ -665,7 +676,9 @@ export class AppStore {
 						text: extractText(message),
 						calls,
 						reveal: false,
-						durationMs: this.durationFor(entry.id),
+						durationMs: message?.durationMs ?? this.durationFor(entry.id),
+						timestamp: message?.timestamp,
+						tokens: message?.usage?.totalTokens,
 					});
 					break;
 				}
@@ -1110,9 +1123,9 @@ export class AppStore {
 /** 节点浅比较（calls 数组逐项比较；text 直接比较）。 */
 function shallowEqualNode(a: FlowNode, b: FlowNode): boolean {
 	if (a.type !== b.type) return false;
-	if (a.type === "user" && b.type === "user") return a.text === b.text && a.reveal === b.reveal;
+	if (a.type === "user" && b.type === "user") return a.text === b.text && a.reveal === b.reveal && a.timestamp === b.timestamp;
 	if (a.type === "assistant" && b.type === "assistant") {
-		if (a.durationMs !== b.durationMs) return false;
+		if (a.durationMs !== b.durationMs || a.timestamp !== b.timestamp || a.tokens !== b.tokens) return false;
 		return a.text === b.text && a.reveal === b.reveal && a.calls.length === b.calls.length && a.calls.every((card, index) => {
 			const other = b.calls[index];
 			return other !== undefined && card.name === other.name && card.summary === other.summary && card.status === other.status && card.isError === other.isError && card.output === other.output && card.argsText === other.argsText;
