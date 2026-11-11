@@ -540,9 +540,34 @@ function ConfirmDialog(): ReactNode {
 	const app = useApp();
 	const target = app.confirmTarget;
 	const cancelRef = useRef<HTMLButtonElement>(null);
+	/** 打开弹层前的焦点元素：关闭后归还，键盘用户不会丢失位置。 */
+	const restoreRef = useRef<HTMLElement | null>(null);
+
 	useEffect(() => {
-		if (target !== null) cancelRef.current?.focus();
+		if (target !== null) {
+			restoreRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+			cancelRef.current?.focus();
+			return;
+		}
+		// 关闭（确认 / 取消 / Esc / 点遮罩）：焦点回到打开它的按钮
+		const back = restoreRef.current;
+		restoreRef.current = null;
+		back?.focus();
 	}, [target]);
+
+	// Esc 关闭（WAI-ARIA dialog 模式）
+	useEffect(() => {
+		if (target === null) return;
+		const onKey = (e: KeyboardEvent): void => {
+			if (e.key === "Escape") {
+				e.preventDefault();
+				store.closeConfirm();
+			}
+		};
+		document.addEventListener("keydown", onKey);
+		return () => document.removeEventListener("keydown", onKey);
+	}, [target]);
+
 	if (target === null) return null;
 	return (
 		<div id="confirm" className="modal-root">
