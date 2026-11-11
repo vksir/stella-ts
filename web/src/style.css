@@ -1352,6 +1352,7 @@ body {
 .msg-tokens {
 	display: inline-flex;
 	align-items: center;
+	box-sizing: border-box;
 	height: 28px;
 	padding: 6px 8px;
 	border-radius: var(--radius-sm);
@@ -1553,13 +1554,6 @@ body {
 	outline: none;
 	text-decoration: underline dotted var(--link);
 	text-underline-offset: 3px;
-}
-
-@media (hover: hover) {
-	.md a:hover {
-		text-decoration: underline dotted var(--link);
-		text-underline-offset: 3px;
-	}
 }
 
 .md :where(ul, ol) {
@@ -3265,16 +3259,25 @@ body.sidebar-collapsed .preset-row {
 	display: inline-flex;
 	align-items: center;
 	gap: 5px;
-	height: 22px;
+	box-sizing: border-box;
+	height: 24px;
 	padding: 0 8px;
-	border-radius: 999px;
-	corner-shape: round;
-	background: var(--md-code-block);
+	border: none;
+	border-radius: var(--radius-sm);
+	background: transparent;
 	color: var(--label-tertiary);
-	font-size: 11px;
-	line-height: 16px;
+	font: inherit;
+	font-size: 12px;
+	line-height: 18px;
 	font-variant-numeric: tabular-nums;
 	white-space: nowrap;
+	transition: background-color 100ms ease;
+}
+
+@media (hover: hover) {
+	.usage-chip:hover {
+		background: var(--interactive-hover);
+	}
 }
 
 .usage-chip svg {
@@ -3282,23 +3285,12 @@ body.sidebar-collapsed .preset-row {
 	opacity: 0.9;
 }
 
-.usage-trigger {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	border: none;
-	background: transparent;
-	color: var(--label-tertiary);
-	font: inherit;
-	font-size: 11px;
-	line-height: 16px;
-	padding: 2px 6px;
-	border-radius: var(--radius-xs);
+/* 第三颗 chip 是按钮：尺寸/圆角/字号与另两颗完全一致，只补可点与 hover 变字色 */
+.usage-chip.usage-trigger {
 	cursor: pointer;
 }
 
-.usage-trigger:hover {
-	background: var(--interactive-hover);
+.usage-chip.usage-trigger:hover {
 	color: var(--label-secondary);
 }
 

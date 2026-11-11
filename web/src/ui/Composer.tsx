@@ -523,7 +523,12 @@ function UsageMeter(): ReactNode {
 				>
 					<ContextRing percent={percent} />
 					<span className="usage-percent">{percentText}</span>
-					{usage.cost > 0 && <span className="usage-cost">{formatCost(usage.cost)}</span>}
+					{usage.cost > 0 && (
+						<>
+							<span className="usage-sep">·</span>
+							<span className="usage-cost">{formatCost(usage.cost)}</span>
+						</>
+					)}
 				</button>
 			</div>
 			{open && <UsagePanel context={app.context} usageDoc={usageDoc} />}
