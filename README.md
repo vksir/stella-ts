@@ -45,7 +45,7 @@ faux 模式使用固定示例回答与内存存储，不读 key、不落盘。
 cp .env.example .env   # 然后编辑 .env
 ```
 
-在 `.env` 中配置任一 provider 的 key（`DEEPSEEK_API_KEY`、`ZAI_API_KEY`、`MOONSHOT_API_KEY`、`OPENROUTER_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GROQ_API_KEY`、`XAI_API_KEY`），配了 key 的 provider 自动启用。注意 `STELLA_DEFAULT_MODEL` 要写成 pi-ai 模型目录里存在的 `provider/modelId`（缺省 `deepseek/deepseek-chat` 不在 1.5.1 目录中时会自动改用该 provider 的第一个模型并提示，建议显式设置，如 `deepseek/deepseek-flash`）。一个 key 都没有时启动会给出明确中文报错。
+在 `.env` 中配置任一 provider 的 key（`DEEPSEEK_API_KEY`、`ZAI_API_KEY`、`MOONSHOT_API_KEY`、`OPENROUTER_API_KEY`、`OPENCODE_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`GROQ_API_KEY`、`XAI_API_KEY`），配了 key 的 provider 自动启用。注意 `STELLA_DEFAULT_MODEL` 要写成 pi-ai 模型目录里存在的 `provider/modelId`（缺省 `deepseek/deepseek-chat` 不在 1.5.1 目录中时会自动改用该 provider 的第一个模型并提示，建议显式设置，如 `opencode-go/deepseek-v4.1-flash` 或 `deepseek/deepseek-flash`）。一个 key 都没有时启动会给出明确中文报错。
 
 ## 常用命令（仓库根）
 

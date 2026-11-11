@@ -44,6 +44,7 @@ export const PROVIDER_ENV_VARS: Readonly<Record<string, string>> = {
 	zai: "ZAI_API_KEY",
 	"moonshotai-cn": "MOONSHOT_API_KEY",
 	openrouter: "OPENROUTER_API_KEY",
+	"opencode-go": "OPENCODE_API_KEY",
 	openai: "OPENAI_API_KEY",
 	anthropic: "ANTHROPIC_API_KEY",
 	groq: "GROQ_API_KEY",

@@ -3,7 +3,7 @@
  *
  * 按「provider → 环境变量」映射表扫描进程环境变量：有 key 才把该 provider 装进
  * pi-ai 的 `Models` 目录。provider 名以 pi-ai 实际导出为准（deepseek / zai /
- * moonshotai-cn / openrouter / openai / anthropic / groq / xai）。
+ * moonshotai-cn / openrouter / opencode-go / openai / anthropic / groq / xai）。
  */
 import type { FauxModelDefinition } from "@earendil-works/pi-ai/providers/faux";
 import { createModels, type MutableModels, type Provider } from "@earendil-works/pi-ai/models";
@@ -18,6 +18,7 @@ import {
 import { groqProvider } from "@earendil-works/pi-ai/providers/groq";
 import { moonshotaiCnProvider } from "@earendil-works/pi-ai/providers/moonshotai-cn";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import { zaiProvider } from "@earendil-works/pi-ai/providers/zai";
@@ -30,6 +31,7 @@ const PROVIDER_FACTORIES: Readonly<Record<string, ProviderFactory>> = {
 	zai: zaiProvider,
 	"moonshotai-cn": moonshotaiCnProvider,
 	openrouter: openrouterProvider,
+	"opencode-go": opencodeGoProvider,
 	openai: openaiProvider,
 	anthropic: anthropicProvider,
 	groq: groqProvider,
