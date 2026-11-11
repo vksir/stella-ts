@@ -41,9 +41,18 @@ function Composer(): ReactNode {
 		el.style.height = `${Math.min(el.scrollHeight, INPUT_MAX_HEIGHT)}px`;
 	};
 
-	// store 请求聚焦（新建会话后）
+	// store 请求聚焦（新建会话 / 引用后）；挂载时先消费一次积压的请求
 	useEffect(() => {
-		const off = store.on("focus-input", () => textareaRef.current?.focus());
+		const focusIfPending = (): void => {
+			if (store.consumeInputFocus()) textareaRef.current?.focus();
+		};
+		focusIfPending();
+		const off = store.on("focus-input", () => {
+			// 等一帧：hero ↔ docked 切换时本组件可能刚移到新父节点
+			requestAnimationFrame(() => {
+				if (store.consumeInputFocus()) textareaRef.current?.focus();
+			});
+		});
 		return () => {
 			off();
 		};
@@ -213,7 +222,7 @@ function WorkspaceChip(): ReactNode {
 							}
 						}}
 					/>
-					<div className="ws-hint">{hint}</div>
+					<div id="workspace-hint" className="ws-hint">{hint}</div>
 					<div className="ws-actions">
 						<button
 							id="reset-workspace"

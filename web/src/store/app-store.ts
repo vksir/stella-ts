@@ -312,6 +312,8 @@ export class AppStore {
 	/** 心跳守护定时器。 */
 	private watchdog: number | undefined;
 	private toastTimer: number | undefined;
+	/** 待处理的聚焦请求：Composer 可能在本次 emit 之后才挂载（新建会话 / 空白态）。 */
+	private pendingFocus = false;
 	private framePending = false;
 	private pendingStreamingText: string | undefined;
 	private structureSignature = "";
@@ -430,7 +432,7 @@ export class AppStore {
 		const created = await postJson<{ id: number }>("/api/conversations", chosen.length > 0 ? { preset: chosen } : {});
 		await this.refreshList();
 		this.switchTo(created.id);
-		this.emit("focus-input");
+		this.requestInputFocus();
 	}
 
 	lastPreset(): string {
@@ -1150,11 +1152,24 @@ export class AppStore {
 		}, 250);
 	}
 
+	/** 请求输入框聚焦：置标志并通知；Composer 未挂载时由挂载后的 effect 消费。 */
+	requestInputFocus(): void {
+		this.pendingFocus = true;
+		this.emit("focus-input");
+	}
+
+	/** Composer 消费聚焦请求（挂载或收到通知时调用）。 */
+	consumeInputFocus(): boolean {
+		const pending = this.pendingFocus;
+		this.pendingFocus = false;
+		return pending;
+	}
+
 	/** 引用到输入框：把消息文本填入 composer 草稿（纯前端，不外发）。 */
 	quoteToInput(text: string): void {
 		this.draft = text;
 		this.emit("draft-set");
-		this.emit("focus-input");
+		this.requestInputFocus();
 	}
 
 	/** composer 草稿（引用功能写入；Composer 订阅 draft-set 后同步到本地 state）。 */
