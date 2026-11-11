@@ -281,14 +281,18 @@ export class AppStore {
 	getKeys = this.keys.get;
 
 	subscribeNode = (key: string, listener: () => void): (() => void) => {
-		let set = this.listeners.get(key);
+		const name = nodeListenerKey(key);
+		let set = this.listeners.get(name);
 		if (set === undefined) {
 			set = new Set();
-			this.listeners.set(key, set);
+			this.listeners.set(name, set);
 		}
-		set.add(listener);
+		const bucket = set;
+		bucket.add(listener);
 		return () => {
-			set?.delete(listener);
+			bucket.delete(listener);
+			// 订阅集空了就删掉这个 key：否则长时间切换会话会留下几百个空 Set
+			if (bucket.size === 0) this.listeners.delete(name);
 		};
 	};
 
@@ -422,6 +426,9 @@ export class AppStore {
 	private clearFlow(): void {
 		for (const key of this.keys.get()) this.nodeSource(key).set(null);
 		this.keys.set([]);
+		// 节点源只对当前会话有效（切换会话时 ChatFlow 会整体重挂）。不清掉的话，
+		// 每切换一次就留下上一条会话的全部快照（含消息正文），属于真实内存泄漏。
+		this.nodeSources.clear();
 	}
 
 	async loadSettings(id: number): Promise<void> {
@@ -1135,6 +1142,11 @@ export class AppStore {
 	showError(error: unknown): void {
 		this.showToast(error instanceof Error ? error.message : String(error));
 	}
+}
+
+/** 节点订阅在 listeners 里的键（加前缀，避免与 `@event` 事件键或裸 key 撞名）。 */
+function nodeListenerKey(key: string): string {
+	return `node:${key}`;
 }
 
 /** 节点浅比较（calls 数组逐项比较；text 直接比较）。 */
