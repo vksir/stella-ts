@@ -1328,20 +1328,6 @@ body {
 	opacity: 0.75;
 }
 
-.queued-tag {
-	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	padding: 1px 8px;
-	border-radius: 999px;
-	corner-shape: round;
-	background: var(--interactive-hover);
-	color: var(--label-tertiary);
-	font-size: 11px;
-	line-height: 18px;
-	white-space: nowrap;
-}
-
 /* 消息元信息：时间（13px tertiary）+ 本条 token 用量（11px caption） */
 .msg-stamp {
 	font-size: 13px;
@@ -1890,19 +1876,9 @@ html[data-theme="dark"] .code-block pre code span {
 }
 
 @media (hover: hover) {
-	.tool-head:hover .tool-state {
-		opacity: 0;
-	}
-
 	.tool-head:hover .tool-disclosure {
 		opacity: 1;
 	}
-}
-
-.tool-state {
-	display: inline-flex;
-	opacity: 1;
-	transition: opacity 100ms ease;
 }
 
 /* 状态图标 */
@@ -1961,10 +1937,6 @@ html[data-theme="dark"] .code-block pre code span {
 
 .tool-summary.error {
 	color: var(--state-error-primary);
-}
-
-.tool-chevron {
-	display: none;
 }
 
 /* 展开体（DSH GenericCommandCard：radius 16、code-block 底、11/16 mono、上限 260px） */
@@ -2435,11 +2407,6 @@ html[data-theme="dark"] .code-block pre code span {
 	cursor: default;
 }
 
-.chip .chevron {
-	flex: none;
-	color: var(--label-caption);
-}
-
 .ws-anchor {
 	position: relative;
 	display: inline-flex;
@@ -2840,18 +2807,6 @@ html[data-theme="dark"] .code-block pre code span {
 	background: var(--interactive-active);
 }
 
-.btn-outline {
-	border: var(--hairline) solid transparent;
-	box-shadow: inset 0 0 0 var(--hairline) var(--border-l3);
-	background: transparent;
-}
-
-@media (hover: hover) {
-	.btn-outline:hover:not(:disabled) {
-		background: var(--interactive-hover);
-	}
-}
-
 .btn-danger {
 	background: var(--state-error-primary);
 	color: #fff;
@@ -3103,10 +3058,6 @@ summary.tool-head::-webkit-details-marker {
 .preset-select {
 	flex: 1;
 	min-width: 0;
-}
-
-body.sidebar-collapsed .preset-row {
-	display: none;
 }
 
 .preset-chip {
