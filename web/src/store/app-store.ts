@@ -63,6 +63,8 @@ export type FlowNode =
 			durationMs?: number;
 			timestamp?: number;
 			tokens?: number;
+			/** 该回答是被中断的（stopReason: aborted，例如服务崩溃/手动停止留下的部分回答）。 */
+			aborted?: boolean;
 	  }
 	| { key: string; type: "assistant-error"; message: string }
 	| { key: string; type: "streaming"; text: string }
@@ -676,6 +678,7 @@ export class AppStore {
 						durationMs: message?.durationMs ?? this.durationFor(entry.id),
 						timestamp: message?.timestamp,
 						tokens: message?.usage?.totalTokens,
+						aborted: message?.stopReason === "aborted",
 					});
 					break;
 				}
@@ -1155,6 +1158,7 @@ function shallowEqualNode(a: FlowNode, b: FlowNode): boolean {
 	if (a.type === "user" && b.type === "user") return a.text === b.text && a.reveal === b.reveal && a.timestamp === b.timestamp;
 	if (a.type === "assistant" && b.type === "assistant") {
 		if (a.durationMs !== b.durationMs || a.timestamp !== b.timestamp || a.tokens !== b.tokens) return false;
+		if (a.aborted !== b.aborted) return false;
 		return a.text === b.text && a.reveal === b.reveal && a.calls.length === b.calls.length && a.calls.every((card, index) => {
 			const other = b.calls[index];
 			return other !== undefined && card.name === other.name && card.summary === other.summary && card.status === other.status && card.isError === other.isError && card.output === other.output && card.argsText === other.argsText;

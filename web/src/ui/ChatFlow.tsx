@@ -81,6 +81,7 @@ function NodeView({ node, conversationId }: { node: FlowNode; conversationId: nu
 					durationMs={node.durationMs}
 					timestamp={node.timestamp}
 					tokens={node.tokens}
+					aborted={node.aborted}
 				/>
 			);
 		case "assistant-error":
@@ -168,6 +169,7 @@ function AssistantNode({
 	durationMs,
 	timestamp,
 	tokens,
+	aborted,
 }: {
 	text: string;
 	calls: ToolCard[];
@@ -175,12 +177,18 @@ function AssistantNode({
 	durationMs?: number;
 	timestamp?: number;
 	tokens?: number;
+	aborted?: boolean;
 }): ReactNode {
 	const parser = useRef<IncrementalMarkdown | null>(null);
 	if (parser.current === null) parser.current = new IncrementalMarkdown();
 	const blocks = useMemo(() => parser.current?.settle(text) ?? { blocks: [], frozenEnd: 0 }, [text]);
 	const [collapsed, setCollapsed] = useState(false);
-	const statusText = durationMs === undefined ? "已完成" : `已完成，用时 ${Math.max(1, Math.round(durationMs / 1000))} 秒`;
+	// 被中断的回答（服务崩溃 / 停止后留下的部分内容）不能声称"已完成"
+	const statusText = aborted
+		? "已中断"
+		: durationMs === undefined
+			? "已完成"
+			: `已完成，用时 ${Math.max(1, Math.round(durationMs / 1000))} 秒`;
 	return (
 		<div className="flow-item msg-stella" data-part="response" data-reveal={reveal ? undefined : "hover"}>
 			<button

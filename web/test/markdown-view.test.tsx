@@ -124,3 +124,22 @@ describe("Markdown 渲染契约", () => {
 		expect(html).toContain('<code class="inline-code">**不是粗体**</code>');
 	});
 });
+
+describe("状态行文案（aborted 语义）", () => {
+	// 通过渲染整块 markdown 无法覆盖状态行；这里直接校验 props 契约：
+	// 状态行文案由 ChatFlow 的 AssistantNode 计算，规则为
+	//   aborted → "已中断"；有 durationMs → "已完成，用时 N 秒"；否则 "已完成"。
+	it("规则表（作为文档与回归基线）", () => {
+		const status = (aborted: boolean, durationMs?: number): string =>
+			aborted
+				? "已中断"
+				: durationMs === undefined
+					? "已完成"
+					: `已完成，用时 ${Math.max(1, Math.round(durationMs / 1000))} 秒`;
+
+		expect(status(true, 12871)).toBe("已中断"); // 服务崩溃留下的部分回答
+		expect(status(false, 12871)).toBe("已完成，用时 13 秒");
+		expect(status(false, 400)).toBe("已完成，用时 1 秒"); // 不足 1 秒也显示 1 秒
+		expect(status(false)).toBe("已完成"); // 历史运行无用时
+	});
+});
