@@ -35,6 +35,7 @@ const stellaLight = {
 	type: "light",
 	colors: {},
 	settings: [
+		{ settings: { foreground: "#0F1115", background: "#F9FAFB" } },
 		{ scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#868E96" } },
 		{ scope: ["string", "string.regexp", "string.interpolated", "entity.name.tag"], settings: { foreground: "#2B8A3E" } },
 		{ scope: ["keyword", "keyword.control", "keyword.operator.expression", "storage.type", "storage.modifier", "entity.name.type", "support.type", "support.class"], settings: { foreground: "#D6336C" } },
@@ -50,6 +51,7 @@ const stellaDark = {
 	type: "dark",
 	colors: {},
 	settings: [
+		{ settings: { foreground: "#E6EDF3", background: "#1B1B1C" } },
 		{ scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#8B949E" } },
 		{ scope: ["string", "string.regexp", "string.interpolated", "entity.name.tag"], settings: { foreground: "#7EE787" } },
 		{ scope: ["keyword", "keyword.control", "keyword.operator.expression", "storage.type", "storage.modifier", "entity.name.type", "support.type", "support.class"], settings: { foreground: "#FF7B72" } },

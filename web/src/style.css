@@ -2815,8 +2815,16 @@ html[data-theme="dark"] .code-block pre code span {
 		display: none;
 	}
 
-	.frame {
+	/* 抽屉态：单列（覆盖 .frame[data-sidebar-collapsed] 的 56px rail 轨道） */
+	.frame,
+	.frame[data-sidebar-drawer],
+	.frame[data-sidebar-collapsed="true"] {
 		grid-template-columns: minmax(0, 1fr);
+	}
+
+	/* 抽屉态只有一列：中心列回到第 1 列（否则会生成隐式第 2 列） */
+	.center-col {
+		grid-column: 1;
 	}
 
 	.sidebar-col {
