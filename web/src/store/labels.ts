@@ -26,8 +26,22 @@ export function summarizeToolCall(name: string, args: Readonly<Record<string, un
 			summary = `${str("path")}（替换 ${str("oldText").length} 字 → ${str("newText").length} 字）`;
 			break;
 		}
-		default:
-			summary = JSON.stringify(args) ?? "";
+		// Stella / pi-durable 自有工具：code 模式脚本、子代理任务
+		case "codemode": {
+			const code = str("code");
+			const firstLine = code.split("\n").find((line) => line.trim().length > 0) ?? "";
+			summary = firstLine.length > 0 ? firstLine.trim() : `（脚本 ${code.length} 字）`;
+			break;
+		}
+		case "subagent":
+			summary = str("task").split("\n")[0] ?? "";
+			break;
+		default: {
+			// 未知工具：优先挑一个像"主语"的字符串参数，避免把整个 JSON 甩在行上
+			const preferred = ["command", "path", "query", "url", "name", "task", "code", "pattern", "prompt"];
+			const picked = preferred.map((key) => str(key)).find((value) => value.length > 0);
+			summary = picked ?? (JSON.stringify(args) ?? "");
+		}
 	}
 	const oneLine = summary.split("\n")[0] ?? "";
 	return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;

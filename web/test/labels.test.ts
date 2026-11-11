@@ -74,8 +74,29 @@ describe("工具调用摘要", () => {
 		);
 	});
 
-	it("未知工具回落为 JSON 一行", () => {
+	it("未知工具无字符串参数时回落 JSON 一行", () => {
 		expect(summarizeToolCall("custom_tool", { a: 1 })).toBe('{"a":1}');
+	});
+
+	it("codemode 取脚本首个非空行", () => {
+		expect(summarizeToolCall("codemode", { code: "\nconst x = await tools.read({path:'a'})" })).toBe(
+			"const x = await tools.read({path:'a'})",
+		);
+		// 全是空白 → 退化为字数提示，不显示空白行
+		expect(summarizeToolCall("codemode", { code: "   \n\n  " })).toBe("（脚本 7 字）");
+	});
+
+	it("subagent 取 task 首行", () => {
+		expect(summarizeToolCall("subagent", { task: "调研 X 方案的可行性\n并给出结论" })).toBe(
+			"调研 X 方案的可行性",
+		);
+	});
+
+	it("未知工具优先挑像主语的字符串参数，而不是整段 JSON", () => {
+		expect(summarizeToolCall("some_tool", { query: "关键词", other: 1 })).toBe("关键词");
+		expect(summarizeToolCall("some_tool", { url: "https://example.com" })).toBe("https://example.com");
+		// 没有可读字符串时才回落 JSON
+		expect(summarizeToolCall("some_tool", { n: 3, flag: true })).toBe('{"n":3,"flag":true}');
 	});
 
 	it("超过 80 字截断加省略号", () => {
