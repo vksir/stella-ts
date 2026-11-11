@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { failureCardText, stoppedText, summarizeToolCall } from "../src/store/labels";
+import { failureCardText, noticeForEntry, stoppedText, summarizeToolCall } from "../src/store/labels";
 
 describe("失败卡片文案", () => {
 	it("每种已知失败原因都有独立中文说明", () => {
@@ -110,5 +110,30 @@ describe("工具调用摘要", () => {
 		expect(summarizeToolCall("bash", {})).toBe("");
 		expect(summarizeToolCall("read", { path: 42 })).toBe("");
 		expect(summarizeToolCall("write", { path: "p", content: null })).toBe("p（写入 0 字）");
+	});
+});
+
+describe("非对话条目的通知行（压缩 / 重置 / 自定义）", () => {
+	it("压缩成功是中性通知，不是错误卡片", () => {
+		const notice = noticeForEntry("pi.compaction", "<summary>早前讨论了 UI 配色</summary>", "manual");
+		expect(notice.label).toBe("上下文已压缩（manual）");
+		// 剥掉 pi-durable 加的 <summary> 包装
+		expect(notice.detail).toBe("早前讨论了 UI 配色");
+	});
+
+	it("压缩无摘要文本时只显示标题", () => {
+		const notice = noticeForEntry("pi.compaction", "   ");
+		expect(notice.label).toBe("上下文已压缩");
+		expect(notice.detail).toBeUndefined();
+	});
+
+	it("重置显示固定文案", () => {
+		expect(noticeForEntry("pi.reset", "").label).toBe("上下文已重置");
+	});
+
+	it("未知类型仍可显示（用 kind 作标题，正文作详情）", () => {
+		const notice = noticeForEntry("pi.custom-thing", "一些内容");
+		expect(notice.label).toBe("（pi.custom-thing）");
+		expect(notice.detail).toBe("一些内容");
 	});
 });

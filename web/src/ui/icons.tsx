@@ -180,3 +180,10 @@ export const SearchIcon = ({ width = 15, height = 15 }: { width?: number; height
 		<path d="M15.5 15.5L21 21" />
 	</Svg>
 );
+
+export const InfoIcon = ({ width = 14, height = 14 }: { width?: number; height?: number }): ReactNode => (
+	<Svg width={width} height={height} strokeWidth="1.7">
+		<circle cx="12" cy="12" r="9" />
+		<path d="M12 11v5.5M12 7.6v.8" />
+	</Svg>
+);

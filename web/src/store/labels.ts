@@ -86,3 +86,31 @@ export function failureCardText(reason: string | undefined, detail: string | und
 export function stoppedText(): string {
 	return "已停止本次运行，已生成的部分已保留。";
 }
+
+/**
+ * 非对话条目（`pi.compaction` / `pi.reset` / 其他自定义类型）在消息流里的呈现。
+ *
+ * 早期实现把它们一律当错误卡片渲染（「本次回答失败（pi.compaction）」)——
+ * 一次成功的上下文压缩会长成红色失败提示，属于会误导用户的错误表达。
+ * 现在统一成中性通知行：`label` 是给人看的一句话，`detail` 是可选展开内容。
+ */
+export interface EntryNotice {
+	/** 展示的标题（中文）。 */
+	label: string;
+	/** 可选展开内容（例如压缩摘要全文）。 */
+	detail?: string;
+}
+
+/** 压缩摘要正文里 pi-durable 加的前后包装，展示前剥掉。 */
+const SUMMARY_PREFIX = /^\s*<summary>\s*/i;
+const SUMMARY_SUFFIX = /\s*<\/summary>\s*$/i;
+
+export function noticeForEntry(kind: string, text: string, reason?: string): EntryNotice {
+	if (kind === "pi.compaction") {
+		const clean = text.replace(SUMMARY_PREFIX, "").replace(SUMMARY_SUFFIX, "").trim();
+		const suffix = reason !== undefined && reason.trim().length > 0 ? `（${reason.trim()}）` : "";
+		return { label: `上下文已压缩${suffix}`, ...(clean.length > 0 ? { detail: clean } : {}) };
+	}
+	if (kind === "pi.reset") return { label: "上下文已重置" };
+	return { label: `（${kind}）`, ...(text.trim().length > 0 ? { detail: text.trim() } : {}) };
+}

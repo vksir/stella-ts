@@ -35,7 +35,7 @@ import {
 	putJson,
 	resultText,
 } from "../api";
-import { failureCardText, stoppedText, summarizeToolCall } from "./labels";
+import { failureCardText, noticeForEntry, stoppedText, summarizeToolCall } from "./labels";
 import { NodeBus, Source } from "./node-bus";
 import { Transcript } from "./transcript";
 
@@ -72,6 +72,7 @@ export type FlowNode =
 	| { key: string; type: "tool"; card: ToolCard }
 	| { key: string; type: "running" }
 	| { key: string; type: "stopped"; text: string }
+	| { key: string; type: "notice"; label: string; detail?: string }
 	| { key: string; type: "error"; reason: string; detail: string | undefined }
 	| { key: string; type: "gap"; after: number; upTo: number }
 	| { key: string; type: "load-earlier" };
@@ -664,8 +665,13 @@ export class AppStore {
 				}
 				default:
 					if (entry.kind === "pi.system" || entry.kind === "pi.tool-result") break;
-					// pi.reset / pi.compaction / 自定义类型 → 占位行
-					nodes.push({ key: `e:${entry.id}`, type: "assistant-error", message: `（${entry.kind}）` });
+					{
+						// pi.compaction / pi.reset / 自定义类型 → 中性通知行（不是错误）
+						const message = entry.model?.[0];
+						const reason = (message as { data?: { reason?: string } } | undefined)?.data?.reason;
+						const notice = noticeForEntry(entry.kind, extractText(message), reason);
+						nodes.push({ key: `e:${entry.id}`, type: "notice", label: notice.label, detail: notice.detail });
+					}
 					break;
 			}
 		}
@@ -1151,6 +1157,7 @@ function shallowEqualNode(a: FlowNode, b: FlowNode): boolean {
 	}
 	if (a.type === "error" && b.type === "error") return a.reason === b.reason && a.detail === b.detail;
 	if (a.type === "stopped" && b.type === "stopped") return a.text === b.text;
+	if (a.type === "notice" && b.type === "notice") return a.label === b.label && a.detail === b.detail;
 	if (a.type === "gap" && b.type === "gap") return a.after === b.after && a.upTo === b.upTo;
 	return true;
 }

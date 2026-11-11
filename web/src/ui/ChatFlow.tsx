@@ -12,6 +12,7 @@ import { MarkdownBlocks } from "../markdown/view";
 import {
 	CheckCircleIcon,
 	ChevronDownIcon,
+	InfoIcon,
 	ChevronRightIcon,
 	CheckIcon,
 	CopyIcon,
@@ -106,6 +107,8 @@ function NodeView({ node, conversationId }: { node: FlowNode; conversationId: nu
 			return <RunningRow />;
 		case "stopped":
 			return <div className="flow-item stopped-line">{node.text}</div>;
+		case "notice":
+			return <NoticeRow label={node.label} detail={node.detail} />;
 		case "error":
 			return <ErrorCard reason={node.reason} detail={node.detail} />;
 		case "gap":
@@ -314,6 +317,30 @@ function RunningRow(): ReactNode {
 				</span>
 			</span>
 		</div>
+	);
+}
+
+// —— 非对话条目的通知行（压缩 / 重置 / 自定义类型）——
+// 用中性样式而不是错误卡片：压缩成功不该显示成因失败。
+
+function NoticeRow({ label, detail }: { label: string; detail?: string }): ReactNode {
+	if (detail === undefined) {
+		return (
+			<div className="flow-item turn-notice">
+				<InfoIcon width={14} height={14} />
+				<span>{label}</span>
+			</div>
+		);
+	}
+	return (
+		<details className="flow-item turn-notice">
+			<summary>
+				<InfoIcon width={14} height={14} />
+				<span>{label}</span>
+				<span className="turn-notice-hint">查看摘要</span>
+			</summary>
+			<div className="turn-notice-body">{detail}</div>
+		</details>
 	);
 }
 

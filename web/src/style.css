@@ -1401,7 +1401,59 @@ body {
 }
 
 /* 状态层紧贴回答顶部：状态行 → 6px → 分隔线 → 12px → 正文（DSH runningDivider 节奏） */
-.msg-stella > .turn-status {
+.msg-stella > /* 非对话条目的通知行（上下文压缩 / 重置）：中性灰，不用错误红 */
+.turn-notice {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 13px;
+	line-height: 22px;
+	color: var(--label-tertiary);
+}
+
+.turn-notice svg {
+	flex: none;
+	opacity: 0.85;
+}
+
+details.turn-notice {
+	display: block;
+}
+
+details.turn-notice > summary {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	list-style: none;
+}
+
+details.turn-notice > summary::-webkit-details-marker {
+	display: none;
+}
+
+.turn-notice-hint {
+	color: var(--label-caption);
+	font-size: 12px;
+}
+
+details.turn-notice[open] .turn-notice-hint {
+	display: none;
+}
+
+.turn-notice-body {
+	margin: 4px 0 0 20px;
+	padding: 8px 12px;
+	border-left: var(--hairline) solid var(--border-l3);
+	font-size: 12px;
+	line-height: 19px;
+	color: var(--label-secondary);
+	white-space: pre-wrap;
+	max-height: 240px;
+	overflow: auto;
+}
+
+.turn-status {
 	margin-top: 0;
 	margin-bottom: 6px;
 }
@@ -1993,6 +2045,58 @@ html[data-theme="dark"] .code-block pre code span {
 /* ============================================================
    运行状态 / 错误 / 占位（DSH .running / .turnErrorRow / stopped 标签）
    ============================================================ */
+
+/* 非对话条目的通知行（上下文压缩 / 重置）：中性灰，不用错误红 */
+.turn-notice {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 13px;
+	line-height: 22px;
+	color: var(--label-tertiary);
+}
+
+.turn-notice svg {
+	flex: none;
+	opacity: 0.85;
+}
+
+details.turn-notice {
+	display: block;
+}
+
+details.turn-notice > summary {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	cursor: pointer;
+	list-style: none;
+}
+
+details.turn-notice > summary::-webkit-details-marker {
+	display: none;
+}
+
+.turn-notice-hint {
+	color: var(--label-caption);
+	font-size: 12px;
+}
+
+details.turn-notice[open] .turn-notice-hint {
+	display: none;
+}
+
+.turn-notice-body {
+	margin: 4px 0 0 20px;
+	padding: 8px 12px;
+	border-left: var(--hairline) solid var(--border-l3);
+	font-size: 12px;
+	line-height: 19px;
+	color: var(--label-secondary);
+	white-space: pre-wrap;
+	max-height: 240px;
+	overflow: auto;
+}
 
 .turn-status {
 	display: inline-flex;
