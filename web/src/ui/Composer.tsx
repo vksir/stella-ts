@@ -355,12 +355,13 @@ function ModelArea(): ReactNode {
 // —— 队列条（DSH QueueDock） ——
 
 function QueueDock(): ReactNode {
-	const inboxVersion = useSyncExternalStore(store.subscribeApp, () => `${store.getApp().busy}:${store.getApp().busyEnter}:${store.getInbox().length}:${store.getInbox().map((i) => `${i.id}:${i.mode}:${i.text}`).join("|")}`);
+	// 订阅 view.docs 的版本：排队项的新增/被消费都在同一运行内发生，app 快照不会变
+	const docsVersion = useSyncExternalStore(store.subscribeDocs, store.getDocsVersion);
 	const app = useApp();
 	const inbox = store.getInbox();
 	if (!app.busy || inbox.length === 0) return null;
 	return (
-		<div id="queue-dock" className="queue-dock" data-version={inboxVersion}>
+		<div id="queue-dock" className="queue-dock" data-version={docsVersion}>
 			<div className="queue-head">
 				<span className="queue-count">{inbox.length} 条排队消息</span>
 				<button
@@ -490,7 +491,11 @@ function UsageMeter(): ReactNode {
 	const app = useApp();
 	const [open, setOpen] = useState(false);
 	const rootRef = useRef<HTMLDivElement>(null);
-	const usageDoc = useSyncExternalStore(store.subscribeApp, () => store.getUsageDoc());
+	const usageDoc = useSyncExternalStore(store.subscribeDocs, () => {
+		// 版本变化时返回 docs 引用（同一 view 内引用稳定，跨 view 才换）
+		store.getDocsVersion();
+		return store.getUsageDoc();
+	});
 	const stats = useSyncExternalStore(store.subscribeApp, () => store.getRunStats());
 	const usage = summarizeUsage(usageDoc);
 

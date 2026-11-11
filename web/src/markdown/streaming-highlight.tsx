@@ -19,8 +19,14 @@ import type { HighlighterCore } from "shiki/core";
 const MAX_LINE_LEN = 1000;
 /** 流式高亮的行数上限：超过就退化为纯文本，等落定整块高亮。 */
 const MAX_LINES = 200;
-/** 每批缓存的行数（缓存单元的粒度）。 */
-const BATCH_LINES = 32;
+/**
+ * 每批缓存的行数（缓存与「可着色」的粒度）。
+ *
+ * 早期取 32：流式里绝大多数代码块只有 10–30 行，凑不满一批就**一行都不着色**，
+ * 表现为"流式期间代码永远是黑白、落定瞬间才跳成彩色"。改成 8 后，10 行以上的块
+ * 在流式中就能出彩色，同时仍是"每 8 行才分词一次"，不会退化成逐 chunk 全量重算。
+ */
+const BATCH_LINES = 8;
 
 interface CachedBatch {
 	/** 该批第一行的行号。 */

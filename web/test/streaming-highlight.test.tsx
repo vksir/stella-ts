@@ -48,21 +48,21 @@ describe("流式高亮会话", () => {
 		expect(renderToStaticMarkup(out as never)).toContain("const a = 1");
 	});
 
-	it("满一批（32 行）才分词，且下批续接 grammar 状态", () => {
+	it("满一批（BATCH_LINES=8 行）才分词，且下批续接 grammar 状态", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		const lines = Array.from({ length: 33 }, (_, i) => `line${i}`);
-		// 33 行 + 末尾空行（split 后会多一个空串，故 34 项 → 33 个完成行）
+		const lines = Array.from({ length: 9 }, (_, i) => `line${i}`);
+		// 9 行 + 末尾空行（split 多一个空串 → 9 个完成行 = 1 满批）
 		const code = `${lines.join("\n")}\n`;
 
 		session.render(highlighter, code, "ts", THEMES);
-		// 第一批 32 行分词（第 1 次调用），状态为空
+		// 第一批 8 行分词（第 1 次调用），状态为空
 		expect(calls.length).toBe(1);
-		expect(calls[0]?.code.split("\n").length).toBe(32);
+		expect(calls[0]?.code.split("\n").length).toBe(8);
 		expect(calls[0]?.hadState).toBe(false);
 
 		// 再长一批：第 2 次调用应带上第一批末尾的 grammar 状态
-		const more = Array.from({ length: 33 }, (_, i) => `line${i + 33}`);
+		const more = Array.from({ length: 9 }, (_, i) => `line${i + 9}`);
 		session.render(highlighter, `${code}${more.join("\n")}\n`, "ts", THEMES);
 		expect(calls.length).toBe(2);
 		expect(calls[1]?.hadState).toBe(true);
@@ -83,13 +83,13 @@ describe("流式高亮会话", () => {
 	it("末行内容改写时，受影响批次被丢弃并重算（保守但正确）", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		const base = Array.from({ length: 33 }, (_, i) => `l${i}`);
+		const base = Array.from({ length: 9 }, (_, i) => `l${i}`);
 		session.render(highlighter, `${base.join("\n")}\n`, "ts", THEMES);
 		const firstRound = calls.length;
 
-		// 第 32 行（0-based）被改写 → 该批失效
+		// 第 8 行（0-based 7）被改写 → 该批失效
 		const changed = [...base];
-		changed[31] = "l31-changed";
+		changed[7] = "l7-changed";
 		session.render(highlighter, `${changed.join("\n")}\n`, "ts", THEMES);
 		expect(calls.length).toBeGreaterThan(firstRound);
 	});
@@ -114,7 +114,7 @@ describe("流式高亮会话", () => {
 	it("换语言或换主题会重置缓存（避免用错 grammar 续接）", () => {
 		const { highlighter, calls } = fakeHighlighter();
 		const session = new StreamingHighlightSession();
-		const code = `${Array.from({ length: 33 }, (_, i) => `l${i}`).join("\n")}\n`;
+		const code = `${Array.from({ length: 9 }, (_, i) => `l${i}`).join("\n")}\n`;
 		session.render(highlighter, code, "ts", THEMES);
 		const afterTs = calls.length;
 		session.render(highlighter, code, "python", THEMES);
@@ -132,7 +132,7 @@ describe("流式高亮会话", () => {
 			},
 		} as never;
 		const session = new StreamingHighlightSession();
-		const code = `${Array.from({ length: 33 }, (_, i) => `l${i}`).join("\n")}\n`;
+		const code = `${Array.from({ length: 9 }, (_, i) => `l${i}`).join("\n")}\n`;
 		const out = session.render(broken, code, "ts", THEMES);
 		expect(out).not.toBe(null);
 		expect(renderToStaticMarkup(out as never)).toContain("l0");

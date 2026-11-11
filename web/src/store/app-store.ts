@@ -218,6 +218,13 @@ export class AppStore {
 
 	// flow 级
 	private keys = new Source<readonly string[]>([]);
+	/**
+	 * 文档版本：每收到一个 SSE view 加一。
+	 * 队列条（pi.inbox）与用量面板（pi.usage）的数据都在 view.docs 里，而 app 快照只在
+	 * busy/heroEmpty/会话身份变化时更新 —— 若它们只订阅 app，排队项被消费、用量跳变这类
+	 * 「同一运行内」的变化就不会刷新（要靠 refreshList 之类的偶然通知兜底）。
+	 */
+	private docVersion = new Source<number>(0);
 	/** 每个 key 一个节点快照 + 订阅桶（桥接已在 NodeBus 内完成）。 */
 	private nodes = new NodeBus<FlowNode>();
 
@@ -259,6 +266,9 @@ export class AppStore {
 	getApp = this.app.get;
 	subscribeKeys = this.keys.subscribe;
 	getKeys = this.keys.get;
+	/** 订阅 view.docs 的版本（每次 view 到达加一）。 */
+	subscribeDocs = this.docVersion.subscribe;
+	getDocsVersion = this.docVersion.get;
 
 	subscribeNode = (key: string, listener: () => void): (() => void) => this.nodes.subscribe(key, listener);
 
@@ -435,6 +445,7 @@ export class AppStore {
 			if (view.conversation.id !== this.app.get().conversationId) return;
 			this.lastEventAt = Date.now();
 			this.view = view;
+			this.docVersion.set(this.docVersion.get() + 1);
 			this.transcript.merge(view);
 			this.setConnected(true);
 			this.publish();
@@ -477,6 +488,7 @@ export class AppStore {
 			this.source = undefined;
 			this.setConnected(false);
 			this.view = null;
+			this.docVersion.set(this.docVersion.get() + 1);
 			this.transcript.reset();
 			this.structureSignature = "";
 			this.clearFlow();
