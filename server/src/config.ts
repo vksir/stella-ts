@@ -32,9 +32,18 @@ export interface StellaConfig {
 	readonly attributionUrl: string;
 	/** faux 模式的流式速率（tokens/s），用于演示/测试排队与停止；不配则瞬时完成。 */
 	readonly fauxRate?: number;
+	/**
+	 * 观察窗口条目数（`STELLA_ENTRY_WINDOW`，默认 200，范围 4–400）。
+	 * 窗口装不下时 SSE view 带 `before`，客户端据此启用「加载更早」并翻页补齐。
+	 * 调小可在短会话上验证翻页/缺口补页；调大用于长会话压测。
+	 */
+	readonly entryWindow: number;
 }
 
 export const DEFAULT_MODEL_SPEC = "deepseek/deepseek-chat";
+/** 观察窗口默认条目数（SSE view 携带的最近条目数）。 */
+export const DEFAULT_ENTRY_WINDOW = 200;
+
 export const DEFAULT_PORT = 7090;
 export const DEFAULT_DATA_DIR = "./data";
 
@@ -74,6 +83,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): StellaConfig {
 	parseModelSpec(spec); // 启动时即校验写法，给出明确中文报错
 	const port = Number.parseInt(env.STELLA_PORT?.trim() ?? "", 10);
 	const fauxRate = Number.parseFloat(env.STELLA_FAUX_RATE?.trim() ?? "");
+	const rawWindow = Number.parseInt(env.STELLA_ENTRY_WINDOW?.trim() ?? "", 10);
 	return {
 		faux: isFauxMode(env),
 		port: Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT,
@@ -84,5 +94,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): StellaConfig {
 		defaultModelSpec: spec,
 		attributionUrl: env.STELLA_ATTRIBUTION_URL?.trim() || "http://localhost",
 		...(Number.isFinite(fauxRate) && fauxRate > 0 ? { fauxRate } : {}),
+		entryWindow: Number.isInteger(rawWindow) ? Math.min(400, Math.max(4, rawWindow)) : DEFAULT_ENTRY_WINDOW,
 	};
 }

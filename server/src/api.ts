@@ -56,8 +56,9 @@ import { resolvePresetAgent, presetSummaries } from "./presets.js";
 import { buildModelCatalog } from "./providers.js";
 import type { Stella } from "./stella.js";
 
-/** 观察窗口：初始 view 携带最近 200 条，最多 400 条，超出部分走 /entries 翻页。 */
-const WATCH_WINDOW = { min: 200, max: 400 } as const;
+/** 观察窗口上限：初始 view 携带最近 config.entryWindow 条（默认 200），
+ *  最多 400 条，超出部分走 /entries 翻页。 */
+const WATCH_WINDOW_MAX = { max: 400 } as const;
 /** 视图窗口之外的翻页单页上限。 */
 const ENTRIES_PAGE_LIMIT = 200;
 const SSE_PING_MS = 15_000;
@@ -368,7 +369,10 @@ export function createApp(stella: Stella): Hono {
 		// 窗口从那里开始，只补断线期间的新条目；缺失超过窗口上限时 pi-durable 回落到最新 min 条，
 		// 中间的缺口由客户端的转写显式标出并补页。
 		const from = readEntryBound(c.req.query("from"));
-		const window = from === undefined ? WATCH_WINDOW : { ...WATCH_WINDOW, from: from as EntryId };
+		const window =
+			from === undefined
+				? { ...WATCH_WINDOW_MAX, min: stella.config.entryWindow }
+				: { ...WATCH_WINDOW_MAX, min: stella.config.entryWindow, from: from as EntryId };
 
 		return streamSSE(c, async (stream) => {
 			const watch = await conversation.watch(BACKGROUND_CONTEXT, window);
