@@ -6,7 +6,7 @@
  * 每个块组件按 ast 节点引用 memo——冻结块引用不变则子树不重渲。
  */
 
-import { Fragment, memo, useEffect, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useRef, useState, type ReactNode } from "react";
 import type {
 	Blockquote,
 	Code,
@@ -21,7 +21,8 @@ import type {
 	TableRow,
 	Text,
 } from "mdast";
-import { highlightCode, isSupportedLang } from "./highlight";
+import { highlightCode, highlightStreaming, isSupportedLang } from "./highlight";
+import { StreamingHighlightSession } from "./streaming-highlight";
 
 // —— 图标 ——
 
@@ -128,17 +129,32 @@ function renderInline(nodes: readonly PhrasingContent[] | undefined, keyBase = "
 
 // —— 代码块（banner + 软换行切换 + 复制 + shiki 落定高亮） ——
 
-function CodeBlockView({ node }: { node: Code }): ReactNode {
+function CodeBlockView({ node, streaming = false }: { node: Code; streaming?: boolean }): ReactNode {
 	const [copied, setCopied] = useState(false);
 	const [wrapped, setWrapped] = useState(true);
 	const [html, setHtml] = useState<string | null>(null);
+	const [streamed, setStreamed] = useState<ReactNode | null>(null);
 	const lang = (node.meta ?? "").trim() || node.lang || "";
+	const session = useRef<StreamingHighlightSession | null>(null);
+	if (session.current === null) session.current = new StreamingHighlightSession();
 
 	useEffect(() => {
 		if (lang.length === 0 || !isSupportedLang(lang)) {
 			setHtml(null);
 			return;
 		}
+		// 流式中：走增量会话（行级缓存 + grammar 续接）；落定：整块高亮
+		if (streaming) {
+			let cancelled = false;
+			void highlightStreaming(node.value, lang, session.current!).then((node2) => {
+				if (!cancelled) setStreamed(node2);
+			});
+			return () => {
+				cancelled = true;
+			};
+		}
+		session.current?.reset();
+		setStreamed(null);
 		let cancelled = false;
 		highlightCode(node.value, lang)
 			.then((out) => {
@@ -148,7 +164,7 @@ function CodeBlockView({ node }: { node: Code }): ReactNode {
 		return () => {
 			cancelled = true;
 		};
-	}, [node.value, lang]);
+	}, [node.value, lang, streaming]);
 
 	return (
 		<div className="code-block">
@@ -185,7 +201,13 @@ function CodeBlockView({ node }: { node: Code }): ReactNode {
 				</span>
 			</div>
 			<pre className={wrapped ? "wrap" : "nowrap"}>
-				{html !== null ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{node.value}</code>}
+				{streaming && streamed !== null ? (
+					<code>{streamed}</code>
+				) : html !== null ? (
+					<code dangerouslySetInnerHTML={{ __html: html }} />
+				) : (
+					<code>{node.value}</code>
+				)}
 			</pre>
 		</div>
 	);
@@ -261,7 +283,7 @@ function ListView({ node }: { node: List }): ReactNode {
 
 // —— 块渲染 ——
 
-function BlockViewInner({ node }: { node: Root["children"][number] }): ReactNode {
+function BlockViewInner({ node, streaming }: { node: Root["children"][number]; streaming?: boolean }): ReactNode {
 	switch (node.type) {
 		case "paragraph":
 			return <p>{renderInline((node as Paragraph).children)}</p>;
@@ -272,7 +294,7 @@ function BlockViewInner({ node }: { node: Root["children"][number] }): ReactNode
 			return <Tag>{renderInline(heading.children)}</Tag>;
 		}
 		case "code":
-			return <CodeBlockView node={node as Code} />;
+			return <CodeBlockView node={node as Code} streaming={streaming} />;
 		case "blockquote": {
 			const quote = node as Blockquote;
 			return <blockquote>{quote.children.map((child, index) => <BlockView key={index} node={child} />)}</blockquote>;
@@ -295,11 +317,18 @@ const BlockView = memo(BlockViewInner);
 // —— 根 ——
 
 /** 渲染一组块（key = 源文本起始偏移，跨冻结边界稳定）。 */
-export function MarkdownBlocks({ blocks }: { blocks: readonly { node: Root["children"][number]; start: number }[] }): ReactNode {
+export function MarkdownBlocks({
+	blocks,
+	streaming = false,
+}: {
+	blocks: readonly { node: Root["children"][number]; start: number }[];
+	/** 流式渲染：代码块走增量高亮会话（落定时自动切回整块高亮）。 */
+	streaming?: boolean;
+}): ReactNode {
 	return (
 		<div className="md">
 			{blocks.map((block) => (
-				<BlockView key={block.start} node={block.node} />
+				<BlockView key={block.start} node={block.node} streaming={streaming} />
 			))}
 		</div>
 	);

@@ -61,3 +61,16 @@ export async function highlightCode(code: string, lang: string): Promise<string>
 	const shiki = await loadShiki();
 	return shiki.highlightResolved(code, resolved);
 }
+
+/** 流式高亮：把增量会话接到全局 highlighter 上（会话自己维护行缓存与 grammar 状态）。 */
+export async function highlightStreaming(
+	code: string,
+	lang: string,
+	session: import("./streaming-highlight").StreamingHighlightSession,
+): Promise<import("react").ReactNode | null> {
+	const resolved = ALIASES[lang.toLowerCase()];
+	if (resolved === undefined) return null;
+	const shiki = await loadShiki();
+	const built = await shiki.streamingHighlighter();
+	return session.render(built.highlighter, code, resolved, built.themes);
+}

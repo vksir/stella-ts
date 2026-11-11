@@ -216,7 +216,7 @@ function StreamingNode({ text }: { text: string }): ReactNode {
 	const blocks = useMemo(() => parser.current?.append(text) ?? { blocks: [], frozenEnd: 0 }, [text]);
 	return (
 		<div className="flow-item msg-stella" data-part="response">
-			{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} />}
+			{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} streaming />}
 		</div>
 	);
 }

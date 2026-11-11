@@ -102,3 +102,14 @@ export async function highlightResolved(code: string, lang: string): Promise<str
 		defaultColor: false,
 	});
 }
+
+/** 供流式高亮会话复用同一个 highlighter 与主题名。 */
+export async function streamingHighlighter(): Promise<{
+	highlighter: HighlighterCore;
+	themes: { light: string; dark: string };
+}> {
+	return {
+		highlighter: await getHighlighter(),
+		themes: { light: stellaLight.name, dark: stellaDark.name },
+	};
+}
