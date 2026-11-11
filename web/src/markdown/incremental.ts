@@ -89,6 +89,9 @@ export class IncrementalMarkdown {
 
 	/** 落定：整篇重 parse（流式期间引用式链接等边缘在此自愈）。 */
 	settle(src: string): IncrementalResult {
+		if (src === this.src && this.state !== undefined) {
+			return { blocks: [...this.state.frozen, ...this.state.tail], frozenEnd: this.state.frozenEnd };
+		}
 		this.src = src;
 		const parsed = parseFull(src);
 		this.state = parsed.state;
@@ -97,6 +100,10 @@ export class IncrementalMarkdown {
 
 	/** 流式追加解析：只重 parse frozenEnd 之后的切片。 */
 	append(next: string): IncrementalResult {
+		if (next === this.src && this.state !== undefined) {
+			// 文本未变（StrictMode 双调 / 无关重渲）：直接复用上次结果
+			return { blocks: [...this.state.frozen, ...this.state.tail], frozenEnd: this.state.frozenEnd };
+		}
 		const prev = this.state;
 		if (prev === undefined || !next.startsWith(prev.prefix) || !next.startsWith(this.src.slice(0, prev.frozenEnd))) {
 			// 首次 / 前缀改写（理论上流式只 append，防御性重置）

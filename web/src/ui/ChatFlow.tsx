@@ -11,11 +11,13 @@ import { IncrementalMarkdown } from "../markdown/incremental";
 import { MarkdownBlocks } from "../markdown/view";
 import {
 	CheckCircleIcon,
+	ChevronDownIcon,
 	ChevronRightIcon,
 	CheckIcon,
 	CopyIcon,
 	MinusCircleIcon,
 	PendingIcon,
+	QuoteIcon,
 	SpinnerIcon,
 	StarIcon,
 	XCircleIcon,
@@ -71,7 +73,7 @@ function NodeView({ node, conversationId }: { node: FlowNode; conversationId: nu
 		case "user":
 			return <UserNode text={node.text} reveal={node.reveal} />;
 		case "assistant":
-			return <AssistantNode text={node.text} calls={node.calls} reveal={node.reveal} />;
+			return <AssistantNode text={node.text} calls={node.calls} reveal={node.reveal} durationMs={node.durationMs} />;
 		case "assistant-error":
 			return (
 				<div className="flow-item turn-error">
@@ -132,19 +134,44 @@ function UserNode({ text, reveal }: { text: string; reveal: boolean }): ReactNod
 
 // —— 助手消息：无气泡全宽 markdown + 工具折叠行 + 操作行 ——
 
-function AssistantNode({ text, calls, reveal }: { text: string; calls: ToolCard[]; reveal: boolean }): ReactNode {
+function AssistantNode({
+	text,
+	calls,
+	reveal,
+	durationMs,
+}: {
+	text: string;
+	calls: ToolCard[];
+	reveal: boolean;
+	durationMs?: number;
+}): ReactNode {
 	const parser = useRef<IncrementalMarkdown | null>(null);
 	if (parser.current === null) parser.current = new IncrementalMarkdown();
 	const blocks = useMemo(() => parser.current?.settle(text) ?? { blocks: [], frozenEnd: 0 }, [text]);
+	const [collapsed, setCollapsed] = useState(false);
+	const statusText = durationMs === undefined ? "已完成" : `已完成，用时 ${Math.max(1, Math.round(durationMs / 1000))} 秒`;
 	return (
 		<div className="flow-item msg-stella" data-part="response" data-reveal={reveal ? undefined : "hover"}>
-			<div className="turn-status">已完成</div>
+			<button
+				type="button"
+				className="turn-status"
+				aria-expanded={!collapsed}
+				title={collapsed ? "展开回答" : "收起回答"}
+				onClick={() => setCollapsed(!collapsed)}
+			>
+				<span>{statusText}</span>
+				<ChevronDownIcon width={14} height={14} />
+			</button>
 			<div className="turn-divider" />
-			{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} />}
-			{calls.map((card, index) => (
-				<ToolRow key={`${card.name}:${index}`} card={card} />
-			))}
-			{text.length === 0 && calls.length === 0 && <span className="flow-placeholder">（无文本内容）</span>}
+			{!collapsed && (
+				<div className="turn-body">
+					{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} />}
+					{calls.map((card, index) => (
+						<ToolRow key={`${card.name}:${index}`} card={card} />
+					))}
+					{text.length === 0 && calls.length === 0 && <span className="flow-placeholder">（无文本内容）</span>}
+				</div>
+			)}
 			<CopyActions text={text} />
 		</div>
 	);
@@ -170,6 +197,15 @@ function CopyActions({ text }: { text: string }): ReactNode | null {
 	if (text.length === 0) return null;
 	return (
 		<div className="msg-actions">
+			<button
+				type="button"
+				className="action"
+				title="引用到输入框"
+				aria-label="引用到输入框"
+				onClick={() => store.quoteToInput(text)}
+			>
+				<QuoteIcon />
+			</button>
 			<button
 				type="button"
 				className="action"

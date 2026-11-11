@@ -349,6 +349,9 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 								<span className="hero-title">Stella</span>
 							</div>
 							<div className="hero-sub">万用日常型助手，直接开始提问。</div>
+							{app.workspace?.model != null && (
+								<span className="hero-badge">{store.displayNameOf(app.workspace.model)}</span>
+							)}
 							{composer}
 						</div>
 					</div>

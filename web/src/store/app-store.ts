@@ -51,7 +51,7 @@ export interface ToolCard {
 
 export type FlowNode =
 	| { key: string; type: "user"; text: string; reveal: boolean }
-	| { key: string; type: "assistant"; text: string; calls: ToolCard[]; reveal: boolean }
+	| { key: string; type: "assistant"; text: string; calls: ToolCard[]; reveal: boolean; durationMs?: number }
 	| { key: string; type: "assistant-error"; message: string }
 	| { key: string; type: "streaming"; text: string }
 	| { key: string; type: "tool"; card: ToolCard }
@@ -302,6 +302,12 @@ export class AppStore {
 	private framePending = false;
 	private pendingStreamingText: string | undefined;
 	private structureSignature = "";
+	/** 本次运行开始时间（busy false→true 时打点），用于「已完成，用时 N 秒」。 */
+	private runStartedAt: number | undefined;
+	/** 本次运行的 run.first（条目 id 下界），结束时才用得到。 */
+	private activeRunFirst: number | undefined;
+	/** run.first → 用时（毫秒）；仅本端观测到的运行有效（历史运行无时间戳）。 */
+	private runDurations = new Map<number, number>();
 	private listeners = new Map<string, Set<() => void>>();
 
 	constructor() {
@@ -439,6 +445,9 @@ export class AppStore {
 		this.framePending = false;
 		this.pendingStreamingText = undefined;
 		this.structureSignature = "";
+		this.runStartedAt = undefined;
+		this.activeRunFirst = undefined;
+		this.runDurations.clear();
 		this.clearFlow();
 		this.patchApp({
 			conversationId: id,
@@ -540,7 +549,18 @@ export class AppStore {
 		const signature = this.computeSignature(items, live, inbox.length);
 		const structural = signature !== this.structureSignature;
 
-		// hero / busy 等 app 级派生
+		// 用时打点：busy 起始记录开始时间与该 run 的 first；结束把耗时记到 run.first 上
+		if (busy && this.runStartedAt === undefined) {
+			this.runStartedAt = Date.now();
+			this.activeRunFirst = run?.first;
+		} else if (!busy && this.runStartedAt !== undefined) {
+			const elapsed = Date.now() - this.runStartedAt;
+			this.runStartedAt = undefined;
+			const runFirst = this.activeRunFirst;
+			this.activeRunFirst = undefined;
+			if (runFirst !== undefined) this.runDurations.set(runFirst, elapsed);
+		}
+
 		const heroEmpty =
 			state.conversationId !== undefined && !busy && entries.length === 0 && inbox.length === 0 && failure === undefined;
 		const appPatch: Partial<AppSnapshot> = { busy, heroEmpty, blank: state.conversationId === undefined };
@@ -645,6 +665,7 @@ export class AppStore {
 						text: extractText(message),
 						calls,
 						reveal: false,
+						durationMs: this.durationFor(entry.id),
 					});
 					break;
 				}
@@ -706,6 +727,15 @@ export class AppStore {
 			if (prev === null || prev.type !== node.type || !shallowEqualNode(prev, node)) source.set(node);
 		}
 		this.keys.set(keyList);
+	}
+
+	/** assistant 条目 id → 其所属运行的用时（取 ≤ id 的最大 run.first）。 */
+	private durationFor(entryId: number): number | undefined {
+		let bestKey: number | undefined;
+		for (const key of this.runDurations.keys()) {
+			if (key <= entryId && (bestKey === undefined || key > bestKey)) bestKey = key;
+		}
+		return bestKey === undefined ? undefined : this.runDurations.get(bestKey);
 	}
 
 	/** 非结构变更时：更新工具槽位节点的 output（运行中工具输出流）。 */
@@ -1056,6 +1086,22 @@ export class AppStore {
 		}, 250);
 	}
 
+	/** 引用到输入框：把消息文本填入 composer 草稿（纯前端，不外发）。 */
+	quoteToInput(text: string): void {
+		this.draft = text;
+		this.emit("draft-set");
+		this.emit("focus-input");
+	}
+
+	/** composer 草稿（引用功能写入；Composer 订阅 draft-set 后同步到本地 state）。 */
+	private draft = "";
+
+	takeDraft(): string {
+		const value = this.draft;
+		this.draft = "";
+		return value;
+	}
+
 	showError(error: unknown): void {
 		this.showToast(error instanceof Error ? error.message : String(error));
 	}
@@ -1066,6 +1112,7 @@ function shallowEqualNode(a: FlowNode, b: FlowNode): boolean {
 	if (a.type !== b.type) return false;
 	if (a.type === "user" && b.type === "user") return a.text === b.text && a.reveal === b.reveal;
 	if (a.type === "assistant" && b.type === "assistant") {
+		if (a.durationMs !== b.durationMs) return false;
 		return a.text === b.text && a.reveal === b.reveal && a.calls.length === b.calls.length && a.calls.every((card, index) => {
 			const other = b.calls[index];
 			return other !== undefined && card.name === other.name && card.summary === other.summary && card.status === other.status && card.isError === other.isError && card.output === other.output && card.argsText === other.argsText;

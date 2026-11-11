@@ -166,3 +166,10 @@ export const ChevronRightIcon = ({ width = 14, height = 14 }: { width?: number; 
 		<path d="M9 6l6 6-6 6" />
 	</svg>
 );
+
+export const QuoteIcon = ({ width = 15, height = 15 }: { width?: number; height?: number }): ReactNode => (
+	<Svg width={width} height={height}>
+		<path d="M9 6H5.5A2.5 2.5 0 0 0 3 8.5v0A2.5 2.5 0 0 0 5.5 11H7v1a3 3 0 0 1-3 3" />
+		<path d="M20 6h-3.5A2.5 2.5 0 0 0 14 8.5v0A2.5 2.5 0 0 0 16.5 11H18v1a3 3 0 0 1-3 3" />
+	</Svg>
+);

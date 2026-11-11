@@ -1317,6 +1317,11 @@ body {
 	margin-top: 0;
 }
 
+/* 折叠状态下正文隐藏，操作行紧贴分隔线 */
+.msg-stella > .turn-divider + .msg-actions {
+	margin-top: 0;
+}
+
 /* 操作行与 28px 命中区光学对齐（DSH MessageIconActions margin-left -6px） */
 .msg-stella > .msg-actions,
 .msg-stella > .bubble-stack + .msg-actions {
@@ -1536,7 +1541,7 @@ body {
 
 .md th {
 	text-align: start;
-	padding: 10px 28px 10px 0;
+	padding: 10px 16px 10px 0;
 	border-bottom: var(--hairline) solid var(--border-l3);
 	font: var(--font-md-table);
 	font-weight: 500;
@@ -1544,7 +1549,7 @@ body {
 }
 
 .md td {
-	padding: 10px 28px 10px 0;
+	padding: 10px 16px 10px 0;
 	border-bottom: var(--hairline) solid var(--border-l2);
 	font: var(--font-md-table);
 	color: var(--label-primary);
@@ -1576,7 +1581,7 @@ body {
 	justify-content: space-between;
 	align-items: center;
 	gap: 12px;
-	padding: 9px 14px;
+	padding: 9px 22px;
 	background: var(--md-code-block-banner);
 	font: 11px/18px var(--font-text);
 	border-radius: var(--radius-lg) var(--radius-lg) 0 0;
@@ -1896,13 +1901,46 @@ html[data-theme="dark"] .code-block pre code span {
    ============================================================ */
 
 .turn-status {
-	display: flex;
+	display: inline-flex;
 	align-items: center;
-	gap: 6px;
+	gap: 4px;
+	align-self: flex-start;
 	margin: 8px 0 0;
-	font-size: 13px;
+	padding: 0;
+	border: none;
+	background: transparent;
+	cursor: pointer;
+	font: inherit;
+	font-size: 14px;
 	line-height: 24px;
 	color: var(--label-tertiary);
+	transition: color 100ms ease;
+}
+
+@media (hover: hover) {
+	.turn-status:hover {
+		color: var(--label-secondary);
+	}
+}
+
+.turn-status svg {
+	flex: none;
+	transition: transform 150ms var(--ease-in-out);
+}
+
+.turn-status[aria-expanded="false"] svg {
+	transform: rotate(-90deg);
+}
+
+/* 折叠正文容器：内部节奏与 .msg-stella 一致（缺省展开时视觉无变化） */
+.turn-body {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.turn-body > * + * {
+	margin-top: 16px;
 }
 
 .turn-divider {
@@ -1978,6 +2016,27 @@ html[data-theme="dark"] .code-block pre code span {
 	}
 	to {
 		background-position: -200% 0;
+	}
+}
+
+/* 工具行运行中摘要：文字扫光（DSH ToolRow collapsedContent 包 TextShimmer） */
+.tool-summary[data-streaming] {
+	background: linear-gradient(
+		90deg,
+		var(--label-shimmer) 0%,
+		currentcolor 50%,
+		var(--label-shimmer) 100%
+	);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	animation: shimmer-slide 2.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.tool-summary[data-streaming] {
+		animation: none;
+		background: none;
 	}
 }
 
@@ -2425,6 +2484,38 @@ html[data-theme="dark"] .code-block pre code span {
 	font-size: 13px;
 	line-height: 20px;
 	color: var(--label-tertiary);
+}
+
+/* hero 徽标：当前会话模型（浅蓝胶囊，给空态一个品牌色点） */
+.hero-badge {
+	align-self: center;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 10px;
+	border-radius: var(--radius-sm);
+	background: var(--bubble);
+	color: var(--state-business-primary);
+	font-size: 11px;
+	line-height: 16px;
+	font-weight: 500;
+	letter-spacing: 0.01em;
+}
+
+/* hero 星标呼吸（DSH hero fish swim 的克制版） */
+.hero-mark svg {
+	animation: hero-mark-breathe 4.5s ease-in-out infinite;
+}
+
+@keyframes hero-mark-breathe {
+	0%, 100% { transform: rotate(0deg) scale(1); }
+	50% { transform: rotate(6deg) scale(1.04); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.hero-mark svg {
+		animation: none;
+	}
 }
 
 /* 空白态的新建按钮（hero stack 内居中） */

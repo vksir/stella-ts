@@ -49,6 +49,20 @@ function Composer(): ReactNode {
 		};
 	}, []);
 
+	// 引用到输入框：store 写入草稿 → 同步本地 state 并聚焦
+	useEffect(() => {
+		const off = store.on("draft-set", () => {
+			setValue(store.takeDraft());
+			requestAnimationFrame(() => {
+				autosize();
+				textareaRef.current?.focus();
+			});
+		});
+		return () => {
+			off();
+		};
+	}, []);
+
 	const send = (gesture: "primary" | "alternate"): void => {
 		const content = value.trim();
 		if (content.length === 0 || disabled) return;

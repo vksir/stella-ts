@@ -36,15 +36,11 @@ const stellaLight = {
 	colors: {},
 	settings: [
 		{ scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#868E96" } },
-		{ scope: ["string", "string.regexp", "string.interpolated"], settings: { foreground: "#2B8A3E" } },
-		{ scope: ["keyword", "keyword.control", "keyword.operator.expression", "storage.type", "storage.modifier"], settings: { foreground: "#D6336C" } },
-		{ scope: ["constant", "constant.numeric", "constant.language"], settings: { foreground: "#0550AE" } },
-		{ scope: ["entity.name.function", "support.function", "meta.function-call"], settings: { foreground: "#8250DF" } },
-		{ scope: ["entity.name.type", "support.type", "support.class"], settings: { foreground: "#953800" } },
-		{ scope: ["variable", "variable.other", "meta.variable"], settings: { foreground: "#24292F" } },
-		{ scope: ["entity.name.tag"], settings: { foreground: "#116329" } },
-		{ scope: ["attribute.name"], settings: { foreground: "#0550AE" } },
-		{ scope: ["punctuation", "meta.brace"], settings: { foreground: "#24292F" } },
+		{ scope: ["string", "string.regexp", "string.interpolated", "entity.name.tag"], settings: { foreground: "#2B8A3E" } },
+		{ scope: ["keyword", "keyword.control", "keyword.operator.expression", "storage.type", "storage.modifier", "entity.name.type", "support.type", "support.class"], settings: { foreground: "#D6336C" } },
+		{ scope: ["constant", "constant.numeric", "constant.language", "attribute.name", "variable.language"], settings: { foreground: "#1C7ED6" } },
+		{ scope: ["entity.name.function", "support.function", "meta.function-call", "entity.name.class"], settings: { foreground: "#6741D9" } },
+		{ scope: ["variable", "variable.other", "meta.variable", "punctuation", "meta.brace", "text"], settings: { foreground: "#0F1115" } },
 	],
 } satisfies ThemeRegistrationRaw;
 
@@ -55,15 +51,11 @@ const stellaDark = {
 	colors: {},
 	settings: [
 		{ scope: ["comment", "punctuation.definition.comment"], settings: { foreground: "#8B949E" } },
-		{ scope: ["string", "string.regexp", "string.interpolated"], settings: { foreground: "#7EE787" } },
-		{ scope: ["keyword", "keyword.control", "keyword.operator.expression", "storage.type", "storage.modifier"], settings: { foreground: "#FF7B72" } },
-		{ scope: ["constant", "constant.numeric", "constant.language"], settings: { foreground: "#79C0FF" } },
-		{ scope: ["entity.name.function", "support.function", "meta.function-call"], settings: { foreground: "#D2A8FF" } },
-		{ scope: ["entity.name.type", "support.type", "support.class"], settings: { foreground: "#FFA657" } },
-		{ scope: ["variable", "variable.other", "meta.variable"], settings: { foreground: "#E6EDF3" } },
-		{ scope: ["entity.name.tag"], settings: { foreground: "#7EE787" } },
-		{ scope: ["attribute.name"], settings: { foreground: "#79C0FF" } },
-		{ scope: ["punctuation", "meta.brace"], settings: { foreground: "#E6EDF3" } },
+		{ scope: ["string", "string.regexp", "string.interpolated", "entity.name.tag"], settings: { foreground: "#7EE787" } },
+		{ scope: ["keyword", "keyword.control", "keyword.operator.expression", "storage.type", "storage.modifier", "entity.name.type", "support.type", "support.class"], settings: { foreground: "#FF7B72" } },
+		{ scope: ["constant", "constant.numeric", "constant.language", "attribute.name", "variable.language"], settings: { foreground: "#79C0FF" } },
+		{ scope: ["entity.name.function", "support.function", "meta.function-call", "entity.name.class"], settings: { foreground: "#D2A8FF" } },
+		{ scope: ["variable", "variable.other", "meta.variable", "punctuation", "meta.brace", "text"], settings: { foreground: "#E6EDF3" } },
 	],
 } satisfies ThemeRegistrationRaw;
 
