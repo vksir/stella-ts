@@ -15,6 +15,5 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src"],
-  "exclude": ["legacy"]
+  "include": ["src"]
 }

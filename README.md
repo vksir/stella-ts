@@ -101,7 +101,7 @@ cp .env.example .env   # 然后编辑 .env
 ## 架构一览
 
 - **服务端权威**：客户端只 POST 当前这条新消息，不带历史；会话、消息历史与所选模型都在服务端（pi-durable Conversation 的转写条目）。
-- **SSE 下行 + POST 上行**（无 WebSocket）：`GET /api/conversations/:id/events` 先推 watch 的初始 view，之后每次 commit 推送新 view。view 的 `entries` 只是窗口：客户端用 `web/src/transcript.ts`（与 pi-durable `ConversationTranscript` 同构）累加整段转写，断线重连带 `?from=` 只补错过的新条目，超过窗口上限的部分显式标缺口并用 `/entries?after=&upTo=` 补齐；向前翻页用 `hasMore`，不按条目 ID 推算。
+- **SSE 下行 + POST 上行**（无 WebSocket）：`GET /api/conversations/:id/events` 先推 watch 的初始 view，之后每次 commit 推送新 view。view 的 `entries` 只是窗口：客户端用 `web/src/store/transcript.ts`（与 pi-durable `ConversationTranscript` 同构）累加整段转写，断线重连带 `?from=` 只补错过的新条目，超过窗口上限的部分显式标缺口并用 `/entries?after=&upTo=` 补齐；向前翻页用 `hasMore`，不按条目 ID 推算。
 - **交互**：运行中发送默认排队（composer 上方的队列条，逐项插话/编辑/删除），Ctrl/Cmd+Enter 用另一种投递方式；失败后的「续跑」走 `{ continue: true }`，不重复用户消息；`/compact [说明]` 是手动压缩指令。
 - **预设**：创建会话时从侧栏选择（配置文件可新增），能力解析进 `pi.agent` 后显示为 composer 的只读 chip。
 - **上下文/花费**：composer 下方的小环显示上下文占用（优先 provider usage，缺失时启发式估算），点开看系统/工具/消息分解与累计 token/成本。

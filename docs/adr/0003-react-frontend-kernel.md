@@ -35,8 +35,9 @@ vanilla TS 足够"——该判断对流式渲染内核不成立；本 ADR 仅取
 - **保持不变**：服务端与 SSE 协议零改动（commit 级全量 view 快照，前端 diff 后只更新
   受影响节点）；`style.css` 的 token 体系与类名平移复用（观感层已对齐，不动）；
   `transcript.ts`（框架无关）原样复用。
-- **旧实现归档**：`web/src/main.ts`、`web/src/markdown.ts` 移入 `web/legacy/` 供平移
-  对照，功能全部迁移后删除。
+- **旧实现**：`web/src/main.ts`、`web/src/markdown.ts` 曾移入 `web/legacy/` 供平移对照，
+  功能迁移与回归（25 项功能 + 97 项自动化测试）完成后已删除——避免仓库里同时存在两套
+  Markdown 渲染器而误改；需要对照时从 git 历史取（删除前提交 `a12290d`）。
 
 ## Considered Options
 
