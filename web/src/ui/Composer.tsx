@@ -172,7 +172,11 @@ function WorkspaceChip(): ReactNode {
 			if (e.target instanceof Element && e.target.closest(".ws-anchor") === null) setOpen(false);
 		};
 		const onKey = (e: KeyboardEvent): void => {
-			if (e.key === "Escape") setOpen(false);
+			if (e.key === "Escape") {
+				setOpen(false);
+				// 焦点归还触发按钮（键盘用户不丢位置）
+				requestAnimationFrame(() => document.getElementById("workspace-chip")?.focus());
+			}
 		};
 		document.addEventListener("pointerdown", onPointerDown);
 		document.addEventListener("keydown", onKey);
@@ -605,5 +609,9 @@ function UsagePanel({ context, usageDoc }: { context: import("../api").ContextOc
 			);
 		}
 	}
-	return <div className="usage-panel">{rows}</div>;
+	return (
+		<div className="usage-panel" role="dialog" aria-label="上下文与花费">
+			{rows}
+		</div>
+	);
 }
