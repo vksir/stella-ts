@@ -23,6 +23,12 @@ export interface MdBlocNode {
 	node: Root["children"][number];
 	/** 块在源文本中的起始偏移（React key）。 */
 	start: number;
+	/**
+	 * 块在源文本中的结束偏移（绝对，非切片内相对）。
+	 * 冻结切点必须用它：切片重 parse 出的 node.position.end 是相对切片的偏移，
+	 * 直接拿来做 frozenEnd 会让切点回退、把已冻结的块重复解析进结果。
+	 */
+	end: number;
 }
 
 export interface IncrementalResult {
@@ -47,6 +53,7 @@ function parseBlocks(src: string, baseOffset: number): MdBlocNode[] {
 	return root.children.map((node) => ({
 		node,
 		start: baseOffset + (node.position?.start.offset ?? 0),
+		end: baseOffset + (node.position?.end.offset ?? 0),
 	}));
 }
 
@@ -66,7 +73,7 @@ function parseFull(src: string): IncrementalResult & { state: ParseState } {
 }
 
 function nodeEnd(block: MdBlocNode, fallback: number): number {
-	return block.node.position?.end.offset ?? fallback;
+	return block.end > 0 ? block.end : fallback;
 }
 
 /**
