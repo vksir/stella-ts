@@ -3264,6 +3264,14 @@ body.sidebar-collapsed .preset-row {
 	gap: 6px;
 	flex-wrap: wrap;
 	min-width: 0;
+	max-width: 100%;
+}
+
+/* 窄屏：dock 内距收紧，芯片允许换行（否则三颗 chip 会顶出视口几个像素） */
+@media (max-width: 767px) {
+	.usage-meter {
+		padding-inline: 10px;
+	}
 }
 
 .usage-chip {
