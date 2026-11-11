@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { store } from "../store/app-store";
 import { modelKey } from "../api";
+import { isComposingEvent } from "./composer-keys";
 import { ChevronDownIcon, FolderIcon, SendIcon, StarFilledIcon, StarOutlineIcon, StopIcon } from "./icons";
 import { useApp } from "./hooks";
 
@@ -101,6 +102,10 @@ function Composer(): ReactNode {
 							autosize();
 						}}
 						onKeyDown={(e) => {
+							// 输入法组合期间（中文/日文/韩文选词）按 Enter 是"确认候选"，
+							// 不能当发送：否则用户敲拼音按回车会把半截内容发出去。
+							// Safari 老版本不填 isComposing，用 keyCode 229 兜底。
+							if (isComposingEvent(e)) return;
 							if (e.key === "Enter" && !e.shiftKey) {
 								e.preventDefault();
 								send(e.ctrlKey || e.metaKey ? "alternate" : "primary");
@@ -220,6 +225,7 @@ function WorkspaceChip(): ReactNode {
 						value={dir}
 						onChange={(e) => setDir(e.target.value)}
 						onKeyDown={(e) => {
+							if (isComposingEvent(e)) return;
 							if (e.key === "Enter") {
 								e.preventDefault();
 								void save();
