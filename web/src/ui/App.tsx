@@ -152,6 +152,23 @@ const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): React
 						</div>
 					)}
 					<div className="scroll-region">
+						<div className="group-head">
+							<span className="group-title">
+								会话
+								{app.conversations.length > 0 && <span className="group-count">{app.conversations.length}</span>}
+							</span>
+							<span className="group-actions">
+								<button
+									type="button"
+									className="icon-btn"
+									title="新会话"
+									aria-label="新会话"
+									onClick={() => void store.createConversation().catch((error) => store.showError(error))}
+								>
+									<PlusIcon />
+								</button>
+							</span>
+						</div>
 						<ul id="conversation-list" className="session-list">
 							{app.conversations.map((conversation) => (
 								<li
@@ -165,6 +182,9 @@ const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): React
 											if (conversation.id !== app.conversationId) store.switchTo(conversation.id);
 										}}
 									>
+										<span className="session-slot" aria-hidden="true">
+											{conversation.id === app.conversationId && app.busy && <span className="session-dot" />}
+										</span>
 										<span className="session-title">{conversation.title ?? "新对话"}</span>
 										<span className="session-time">{formatRelative(conversation.createdAt)}</span>
 									</button>

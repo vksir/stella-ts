@@ -689,6 +689,49 @@ body {
 	scrollbar-gutter: stable;
 }
 
+/* 分组头（DSH sidebar groupHeader：12–13px 灰标题 + 右侧 28px 动作图标） */
+.group-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	flex: none;
+	padding: 6px 8px 2px;
+	box-sizing: border-box;
+}
+
+.group-title {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	font-size: 12px;
+	line-height: 18px;
+	font-weight: 500;
+	color: var(--label-tertiary);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.group-count {
+	font-variant-numeric: tabular-nums;
+	color: var(--label-caption);
+	font-weight: 400;
+}
+
+.group-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	flex: none;
+}
+
+.group-actions .icon-btn {
+	width: 24px;
+	height: 24px;
+}
+
 .session-list {
 	flex: none;
 	display: flex;
@@ -739,6 +782,36 @@ body {
 	line-height: 22px;
 	text-align: left;
 	cursor: pointer;
+}
+
+/* 状态点槽（DSH slot：16×20；运行中显示蓝点，其余占位保持缩进对齐） */
+.session-slot {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 20px;
+}
+
+.session-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 999px;
+	background: var(--state-business-primary);
+	animation: session-dot-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes session-dot-pulse {
+	0%, 100% { opacity: 0.35; }
+	50% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.session-dot {
+		animation: none;
+		opacity: 1;
+	}
 }
 
 .session-title {
@@ -1229,6 +1302,21 @@ body {
 	margin-top: 16px;
 }
 
+/* 状态层紧贴回答顶部：状态行 → 6px → 分隔线 → 12px → 正文（DSH runningDivider 节奏） */
+.msg-stella > .turn-status {
+	margin-top: 0;
+	margin-bottom: 6px;
+}
+
+.msg-stella > .turn-divider {
+	margin-top: 0;
+	margin-bottom: 12px;
+}
+
+.msg-stella > .turn-divider + * {
+	margin-top: 0;
+}
+
 /* 操作行与 28px 命中区光学对齐（DSH MessageIconActions margin-left -6px） */
 .msg-stella > .msg-actions,
 .msg-stella > .bubble-stack + .msg-actions {
@@ -1448,7 +1536,7 @@ body {
 
 .md th {
 	text-align: start;
-	padding: 10px 16px 10px 0;
+	padding: 10px 28px 10px 0;
 	border-bottom: var(--hairline) solid var(--border-l3);
 	font: var(--font-md-table);
 	font-weight: 500;
@@ -1456,7 +1544,7 @@ body {
 }
 
 .md td {
-	padding: 10px 16px 10px 0;
+	padding: 10px 28px 10px 0;
 	border-bottom: var(--hairline) solid var(--border-l2);
 	font: var(--font-md-table);
 	color: var(--label-primary);
@@ -1465,6 +1553,11 @@ body {
 
 .md tbody tr:last-child td {
 	border-bottom: none;
+}
+
+.md th:last-child,
+.md td:last-child {
+	padding-right: 0;
 }
 
 /* 代码块（DSH CodeBlock.module.css） */

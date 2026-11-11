@@ -188,9 +188,10 @@ function alignStyle(align: string | null | undefined): React.CSSProperties | und
 function TableView({ node }: { node: Table }): ReactNode {
 	const header = node.children[0];
 	const rows = node.children.slice(1);
-	const narrow = (header?.children.length ?? 0) < 4;
+	// 宽表（≥4 列）拉满容器，窄表按内容自适应（DSH table-fill 语义）
+	const wide = (header?.children.length ?? 0) >= 4;
 	return (
-		<div className={`table-scroll${narrow ? " table-fill" : ""}`}>
+		<div className={`table-scroll${wide ? " table-fill" : ""}`}>
 			<table>
 				{header !== undefined && (
 					<thead>
