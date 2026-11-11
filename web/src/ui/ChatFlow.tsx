@@ -6,6 +6,7 @@
 
 import { memo, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { failureCardText, store, type FlowNode, type ToolCard } from "../store/app-store";
+import { useApp, useFlowKeys, useNode } from "./hooks";
 import { IncrementalMarkdown } from "../markdown/incremental";
 import { MarkdownBlocks } from "../markdown/view";
 import {
@@ -21,10 +22,7 @@ import {
 } from "./icons";
 
 function Seat({ nodeKey, conversationId }: { nodeKey: string; conversationId: number }): ReactNode {
-	const node = useSyncExternalStore(
-		(cb) => store.subscribeNode(nodeKey, cb),
-		() => store.getNode(nodeKey),
-	);
+	const node = useNode(nodeKey);
 	if (node === null) return null;
 	return <NodeView node={node} conversationId={conversationId} />;
 }
@@ -32,12 +30,35 @@ function Seat({ nodeKey, conversationId }: { nodeKey: string; conversationId: nu
 const SeatMemo = memo(Seat);
 
 export function ChatFlow({ columnRef }: { columnRef: React.RefObject<HTMLDivElement> }): ReactNode {
-	const keys = useSyncExternalStore(store.subscribeKeys, store.getKeys);
-	const conversationId = useSyncExternalStore(store.subscribeApp, () => store.getApp().conversationId) ?? 0;
+	const keys = useFlowKeys();
+	const conversationId = useApp().conversationId ?? 0;
 	return (
 		<div className="column" ref={columnRef}>
 			{keys.map((key) => (
 				<SeatMemo key={`${conversationId}:${key}`} nodeKey={key} conversationId={conversationId} />
+			))}
+		</div>
+	);
+}
+
+// —— 轨迹视图（头部「轨迹」Tab）：全部工具调用按时间线展开 ——
+
+export function TraceView(): ReactNode {
+	const keys = useFlowKeys();
+	const cards = useMemo(() => store.getTraceCards(), [keys]);
+	if (cards.length === 0) {
+		return (
+			<div className="column">
+				<div className="flow-item flow-placeholder">（本会话还没有工具调用）</div>
+			</div>
+		);
+	}
+	return (
+		<div className="column trace">
+			{cards.map((item) => (
+				<div className="flow-item" key={item.key}>
+					<ToolRow card={item.card} />
+				</div>
 			))}
 		</div>
 	);
@@ -117,6 +138,8 @@ function AssistantNode({ text, calls, reveal }: { text: string; calls: ToolCard[
 	const blocks = useMemo(() => parser.current?.settle(text) ?? { blocks: [], frozenEnd: 0 }, [text]);
 	return (
 		<div className="flow-item msg-stella" data-part="response" data-reveal={reveal ? undefined : "hover"}>
+			<div className="turn-status">已完成</div>
+			<div className="turn-divider" />
 			{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} />}
 			{calls.map((card, index) => (
 				<ToolRow key={`${card.name}:${index}`} card={card} />

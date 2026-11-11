@@ -842,6 +842,43 @@ export class AppStore {
 		return this.view?.docs["pi.usage"];
 	}
 
+	/** 轨迹视图：全部工具调用按时间线（含运行中槽位）。 */
+	getTraceCards(): { key: string; card: ToolCard }[] {
+		const items = this.transcript.items;
+		const entries = items.flatMap((item) => (item.kind === "entry" ? [item.entry] : []));
+		const live = this.view?.docs["pi.live"];
+		const toolResults = new Map<string, ToolResultMessage>();
+		for (const entry of entries) {
+			if (entry.kind !== "pi.tool-result") continue;
+			const message = entry.model?.[0];
+			if (isToolResult(message) && message.toolCallId !== undefined) toolResults.set(message.toolCallId, message);
+		}
+		const liveSlots = new Map<string, LiveToolSlot>();
+		for (const slot of live?.tools ?? []) {
+			if (slot.callId !== undefined) liveSlots.set(slot.callId, slot);
+		}
+		const partial = live?.generation?.message;
+		const out: { key: string; card: ToolCard }[] = [];
+		const rendered = new Set<string>();
+		for (const entry of entries) {
+			if (entry.kind !== "pi.assistant") continue;
+			const message = entry.model?.[0];
+			const blocks = Array.isArray(message?.content) ? message.content : [];
+			for (const block of blocks) {
+				if (block.type !== "toolCall" || block.id === undefined) continue;
+				rendered.add(block.id);
+				out.push({ key: `e:${entry.id}:${block.id}`, card: callCard(block, toolResults.get(block.id), liveSlots.get(block.id)) });
+			}
+		}
+		if (live?.run != null) {
+			for (const slot of live.tools ?? []) {
+				if (slot.callId === undefined || rendered.has(slot.callId)) continue;
+				out.push({ key: `t:${slot.callId}`, card: slotCard(slot, partialToolCall(partial, slot.callId)) });
+			}
+		}
+		return out;
+	}
+
 	private async deleteSubmission(id: number): Promise<string> {
 		const conversationId = this.app.get().conversationId;
 		if (conversationId === undefined) return "failed";

@@ -393,6 +393,12 @@ body {
 	text-autospace: normal;
 }
 
+/* React 根容器：撑满视口，让 .frame 的 100% 高度生效 */
+#root {
+	height: 100%;
+	min-height: 0;
+}
+
 button,
 input,
 select,
@@ -953,8 +959,74 @@ body {
 	flex: none;
 	box-sizing: border-box;
 	min-height: 0;
-	padding: 10px 28px 10px 20px;
+	padding: 10px 28px 0 20px;
 	border-bottom: var(--hairline) solid var(--border-l3);
+}
+
+/* 内容态：标题行 30px + Tab 行 35px ≈ 76px（DSH header）；空态紧凑 40px 无标题 */
+.conv-header[data-compact] {
+	padding: 10px 28px 10px 20px;
+}
+
+/* 标题右侧状态 chip（预设，DSH header statusChip） */
+.status-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: 6px;
+	padding: 2px 8px;
+	border-radius: var(--radius-sm);
+	font-size: 13px;
+	line-height: 20px;
+	color: var(--label-secondary);
+	white-space: nowrap;
+}
+
+.status-chip svg {
+	flex: none;
+}
+
+/* 视图 Tab 行（DSH .tabs：13px/500，激活蓝 + 2px 下划线） */
+.tabs {
+	display: flex;
+	align-items: stretch;
+	gap: 4px;
+	min-height: 35px;
+	margin-top: 2px;
+}
+
+.tab {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	padding: 0 10px;
+	border: none;
+	background: transparent;
+	cursor: pointer;
+	font-size: 13px;
+	line-height: 18px;
+	font-weight: 500;
+	color: var(--label-tertiary);
+	transition: color 100ms ease;
+}
+
+.tab:hover {
+	color: var(--label-secondary);
+}
+
+.tab[aria-selected="true"] {
+	color: var(--state-business-primary);
+}
+
+.tab[aria-selected="true"]::after {
+	content: "";
+	position: absolute;
+	left: 10px;
+	right: 10px;
+	bottom: 0;
+	height: 2px;
+	border-radius: 2px;
+	background: var(--state-business-primary);
 }
 
 .title-row {
@@ -1089,7 +1161,7 @@ body {
 	border-radius: var(--radius-xl);
 	padding: 10px 16px;
 	font-size: var(--content-font-size);
-	line-height: calc(24px + var(--content-font-delta));
+	line-height: calc(22px + var(--content-font-delta));
 	color: var(--label-primary);
 	white-space: pre-wrap;
 	word-break: break-word;
@@ -1376,7 +1448,7 @@ body {
 
 .md th {
 	text-align: start;
-	padding: 10px 16px;
+	padding: 10px 16px 10px 0;
 	border-bottom: var(--hairline) solid var(--border-l3);
 	font: var(--font-md-table);
 	font-weight: 500;
@@ -1384,10 +1456,15 @@ body {
 }
 
 .md td {
-	padding: 10px 16px;
+	padding: 10px 16px 10px 0;
+	border-bottom: var(--hairline) solid var(--border-l2);
 	font: var(--font-md-table);
-	color: var(--label-secondary);
+	color: var(--label-primary);
 	vertical-align: top;
+}
+
+.md tbody tr:last-child td {
+	border-bottom: none;
 }
 
 /* 代码块（DSH CodeBlock.module.css） */
@@ -1420,6 +1497,50 @@ body {
 	font-family: var(--font-code);
 	font-size: 11px;
 	line-height: 18px;
+	color: var(--label-tertiary);
+}
+
+.code-banner-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 12px;
+	flex: none;
+}
+
+.code-tool {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: transparent;
+	border: none;
+	padding: 0;
+	margin: 0;
+	color: var(--label-tertiary);
+	cursor: pointer;
+	opacity: 0.8;
+	transition: opacity 100ms ease, color 100ms ease;
+}
+
+.code-tool[data-on] {
+	color: var(--label-secondary);
+	opacity: 1;
+}
+
+@media (hover: hover) {
+	.code-tool:hover {
+		opacity: 1;
+		color: var(--label-secondary);
+	}
+}
+
+/* shiki 双主题：span 颜色由 --shiki-light/--shiki-dark 变量按主题切换 */
+.code-block pre code span {
+	color: var(--shiki-light, inherit);
+}
+
+html[data-theme="dark"] .code-block pre code span {
+	color: var(--shiki-dark, inherit);
 }
 
 .code-copy {
@@ -1445,12 +1566,20 @@ body {
 
 .code-block pre {
 	margin: 0;
-	padding: 16px;
+	padding: 6px 22px 20px;
 	font: var(--font-md-code-block);
 	overflow-x: auto;
+	border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.code-block pre.wrap {
 	white-space: pre-wrap;
 	word-break: break-all;
-	border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+
+.code-block pre.nowrap {
+	white-space: pre;
+	word-break: normal;
 }
 
 .code-block pre code {
@@ -1673,6 +1802,22 @@ body {
    运行状态 / 错误 / 占位（DSH .running / .turnErrorRow / stopped 标签）
    ============================================================ */
 
+.turn-status {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin: 8px 0 0;
+	font-size: 13px;
+	line-height: 24px;
+	color: var(--label-tertiary);
+}
+
+.turn-divider {
+	height: var(--hairline);
+	background: var(--border-l3);
+	margin: 0 0 12px;
+}
+
 .running {
 	position: relative;
 	display: flex;
@@ -1885,6 +2030,9 @@ body {
 	padding-top: 8px;
 	border: 0;
 	--elevation-stroke-color: var(--border-l2);
+	--elevation-stroke: 0 0 0 0.5px var(--elevation-stroke-color);
+	--elevation-soft: var(--elevation-stroke), 0 4px 16px 0 rgba(0, 0, 0, 0.03),
+		0 0 24px 0 rgba(0, 0, 0, 0.03);
 	border-radius: var(--radius-panel);
 	background: var(--input-major);
 	box-shadow: var(--elevation-soft);
@@ -2132,8 +2280,16 @@ body {
 	padding: 0 24px 40px;
 }
 
+
 .hero[hidden] {
 	display: none;
+}
+
+
+/* 空态：messages（空列）零占位，hero+composer 整块居中（DSH HeroShell） */
+.messages:has(> .column:empty) {
+	flex: 0 0 auto;
+	padding-block: 0;
 }
 
 .hero-stack {

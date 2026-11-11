@@ -6,7 +6,7 @@
  * 每个块组件按 ast 节点引用 memo——冻结块引用不变则子树不重渲。
  */
 
-import { memo, type ReactNode, useState } from "react";
+import { memo, useEffect, useState, type ReactNode } from "react";
 import type {
 	Blockquote,
 	Code,
@@ -21,8 +21,9 @@ import type {
 	TableRow,
 	Text,
 } from "mdast";
+import { highlightCode, isSupportedLang } from "./highlight";
 
-// —— 图标（与 legacy 相同） ——
+// —— 图标 ——
 
 const COPY_ICON = (
 	<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -33,6 +34,11 @@ const COPY_ICON = (
 const CHECK_ICON = (
 	<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
 		<path d="M4 10.5l4 4 8-8.5" />
+	</svg>
+);
+const WRAP_ICON = (
+	<svg viewBox="0 0 20 20" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+		<path d="M3 5h14M3 9h7.5a3 3 0 1 1 0 6H8.5m1.5 0-2-2m2 2-2 2M3 15h2" />
 	</svg>
 );
 
@@ -99,38 +105,75 @@ function renderInline(nodes: readonly PhrasingContent[] | undefined, keyBase = "
 	});
 }
 
-// —— 代码块（banner + 复制） ——
+// —— 代码块（banner + 软换行切换 + 复制 + shiki 落定高亮） ——
 
 function CodeBlockView({ node }: { node: Code }): ReactNode {
 	const [copied, setCopied] = useState(false);
+	const [wrapped, setWrapped] = useState(true);
+	const [html, setHtml] = useState<string | null>(null);
 	const lang = (node.meta ?? "").trim() || node.lang || "";
+
+	useEffect(() => {
+		if (lang.length === 0 || !isSupportedLang(lang)) {
+			setHtml(null);
+			return;
+		}
+		let cancelled = false;
+		highlightCode(node.value, lang)
+			.then((out) => {
+				if (!cancelled) setHtml(extractCodeInner(out));
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [node.value, lang]);
+
 	return (
 		<div className="code-block">
 			<div className="code-banner">
 				<span className="code-lang">{lang}</span>
-				<button
-					type="button"
-					className="code-copy"
-					title={copied ? "已复制" : "复制代码"}
-					onClick={() => {
-						void navigator.clipboard
-							.writeText(node.value)
-							.then(() => {
-								setCopied(true);
-								return new Promise((resolve) => setTimeout(resolve, 1500));
-							})
-							.then(() => setCopied(false))
-							.catch(() => undefined);
-					}}
-				>
-					{copied ? CHECK_ICON : COPY_ICON}
-				</button>
+				<span className="code-banner-actions">
+					<button
+						type="button"
+						className="code-tool"
+						data-on={wrapped ? "" : undefined}
+						title={wrapped ? "软换行：开（点击改为横向滚动）" : "软换行：关（点击改为自动换行）"}
+						aria-label="切换软换行"
+						onClick={() => setWrapped(!wrapped)}
+					>
+						{WRAP_ICON}
+					</button>
+					<button
+						type="button"
+						className="code-tool"
+						title={copied ? "已复制" : "复制代码"}
+						onClick={() => {
+							void navigator.clipboard
+								.writeText(node.value)
+								.then(() => {
+									setCopied(true);
+									return new Promise((resolve) => setTimeout(resolve, 1500));
+								})
+								.then(() => setCopied(false))
+								.catch(() => undefined);
+						}}
+					>
+						{copied ? CHECK_ICON : COPY_ICON}
+					</button>
+				</span>
 			</div>
-			<pre>
-				<code>{node.value}</code>
+			<pre className={wrapped ? "wrap" : "nowrap"}>
+				{html !== null ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{node.value}</code>}
 			</pre>
 		</div>
 	);
+}
+
+/** 取 shiki 输出 <code>…</code> 的内层 HTML（外壳 pre/样式用本组件自己的）。 */
+function extractCodeInner(out: string): string {
+	const match = /<code[^>]*>([\s\S]*)<\/code>/.exec(out);
+	return match?.[1] ?? "";
 }
 
 // —— 表格 ——

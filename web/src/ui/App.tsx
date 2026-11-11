@@ -3,7 +3,7 @@
  * DOM 结构与类名对齐 legacy index.html，style.css 继续生效。
  */
 
-import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { store } from "../store/app-store";
 import { cycleTheme, loadThemePref } from "../theme";
 import {
@@ -18,24 +18,9 @@ import {
 	StarIcon,
 } from "./icons";
 import { ComposerSeat } from "./Composer";
-import { ChatFlow } from "./ChatFlow";
-
-// —— hooks ——
-
-export function useApp(): ReturnType<typeof store.getApp> {
-	return useSyncExternalStore(store.subscribeApp, store.getApp);
-}
-
-function useMedia(query: string): boolean {
-	const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
-	useEffect(() => {
-		const mql = window.matchMedia(query);
-		const onChange = (): void => setMatches(mql.matches);
-		mql.addEventListener("change", onChange);
-		return () => mql.removeEventListener("change", onChange);
-	}, [query]);
-	return matches;
-}
+import { ChatFlow, TraceView } from "./ChatFlow";
+import { ChevronDownIcon } from "./icons";
+import { useApp, useMedia } from "./hooks";
 
 // —— 侧栏状态（App 持有，dataset 同步给 CSS） ——
 
@@ -64,11 +49,18 @@ function initialCollapsed(): boolean {
 	return loadSidebarCollapsed() ?? window.innerWidth < 1024;
 }
 
-function formatTime(createdAt?: number): string {
+function formatRelative(createdAt?: number): string {
 	if (createdAt === undefined || createdAt <= 0) return "";
+	const now = Date.now();
+	const diff = now - createdAt;
+	if (diff < 60_000) return "刚刚";
+	if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分钟`;
 	const date = new Date(createdAt);
+	const today = new Date(now);
 	const pad = (n: number): string => String(n).padStart(2, "0");
-	return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+	if (date.toDateString() === today.toDateString()) return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+	if (date.getFullYear() === today.getFullYear()) return `${date.getMonth() + 1}/${date.getDate()}`;
+	return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 interface SidebarState {
@@ -174,7 +166,7 @@ const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): React
 										}}
 									>
 										<span className="session-title">{conversation.title ?? "新对话"}</span>
-										<span className="session-time">{formatTime(conversation.createdAt)}</span>
+										<span className="session-time">{formatRelative(conversation.createdAt)}</span>
 									</button>
 									<button
 										type="button"
@@ -228,6 +220,7 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 	const scrollerRef = useRef<HTMLDivElement>(null);
 	const columnRef = useRef<HTMLDivElement>(null);
 	const followingRef = useRef(true);
+	const [view, setView] = useState<"chat" | "trace">("chat");
 
 	// scroll follow：意图（nearBottom 阈值）与内容增长分离
 	useEffect(() => {
@@ -263,12 +256,14 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 	}, [app.conversationId]);
 
 	const heroMode = app.heroEmpty || app.blank;
+	const compact = heroMode;
 	const title = app.conversations.find((c) => c.id === app.conversationId)?.title ?? "新对话";
 	const composer = <ComposerSeat />;
+	const preset = app.presets.find((item) => item.id === app.preset);
 
 	return (
 		<section id="center" className="center-col">
-			<header id="chat-header" className="conv-header" hidden={app.conversationId === undefined}>
+			<header id="chat-header" className="conv-header" data-compact={compact ? "" : undefined} hidden={app.conversationId === undefined}>
 				<div className="title-row">
 					<button
 						id="menu-toggle"
@@ -284,18 +279,36 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 					<button id="sidebar-open" className="icon-btn desktop-only" type="button" aria-label="展开侧栏" hidden>
 						<PanelExpandIcon />
 					</button>
-					<div className="crumbs">
-						<span className="crumb-seg">
-							<span id="chat-title" className="crumb crumb-current">
-								{title}
+					{!compact && (
+						<div className="crumbs">
+							<span className="crumb-seg">
+								<span id="chat-title" className="crumb crumb-current">
+									{title}
+								</span>
+								{preset !== undefined && (
+									<span className="status-chip" title={preset.description ?? `预设：${preset.id}`}>
+										{preset.name}
+										<ChevronDownIcon />
+									</span>
+								)}
 							</span>
-						</span>
-					</div>
+						</div>
+					)}
 				</div>
+				{!compact && (
+					<div className="tabs" role="tablist" aria-label="会话视图">
+						<button type="button" className="tab" role="tab" aria-selected={view === "chat"} onClick={() => setView("chat")}>
+							对话
+						</button>
+						<button type="button" className="tab" role="tab" aria-selected={view === "trace"} onClick={() => setView("trace")}>
+							轨迹
+						</button>
+					</div>
+				)}
 			</header>
 			<div id="scroll-body" className="scroll-body" ref={scrollerRef}>
 				<main id="messages" className="messages" aria-live="polite">
-					<ChatFlow columnRef={columnRef} />
+					{view === "chat" ? <ChatFlow columnRef={columnRef} /> : <TraceView />}
 				</main>
 				{heroMode ? (
 					<div id="hero" className="hero">

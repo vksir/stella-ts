@@ -11,7 +11,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } fro
 import { store } from "../store/app-store";
 import { modelKey } from "../api";
 import { ChevronDownIcon, FolderIcon, SendIcon, StarFilledIcon, StarOutlineIcon, StopIcon } from "./icons";
-import { useApp } from "./App";
+import { useApp } from "./hooks";
 
 const INPUT_MAX_HEIGHT = 336;
 
@@ -71,7 +71,7 @@ function Composer(): ReactNode {
 						rows={1}
 						aria-label="消息输入框"
 						disabled={disabled}
-						placeholder={disabled ? "先新建一个会话…" : "给 Stella 发消息…（Enter 发送，Shift+Enter 换行）"}
+						placeholder={disabled ? "先新建一个会话…" : "给 Stella 发消息…"}
 						value={value}
 						onChange={(e) => {
 							setValue(e.target.value);
@@ -475,7 +475,9 @@ function UsageMeter(): ReactNode {
 		return () => document.removeEventListener("pointerdown", onPointerDown);
 	}, [open]);
 
-	if (app.conversationId === undefined || (usage.tokens <= 0 && app.context === null)) return null;
+	if (app.conversationId === undefined || app.heroEmpty || app.blank || (usage.tokens <= 0 && app.context === null)) {
+		return null;
+	}
 	const percent = app.context?.percent ?? null;
 	const percentText = percent === null ? "—" : `${Math.round(percent)}%`;
 
