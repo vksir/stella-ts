@@ -266,6 +266,15 @@ export class AppStore {
 	getApp = this.app.get;
 	subscribeKeys = this.keys.subscribe;
 	getKeys = this.keys.get;
+	/**
+	 * 本次运行开始时间（毫秒）；没有运行中返回 undefined。
+	 * 状态行用它显示「用时 N 秒」——只读快照，计时由组件本地 state 每秒推进，
+	 * 不往 store 里灌每秒一次的通知（那会连带重渲侧栏/composer）。
+	 */
+	getRunStartedAt(): number | undefined {
+		return this.app.get().busy ? this.runStartedAt : undefined;
+	}
+
 	/** 订阅 view.docs 的版本（每次 view 到达加一）。 */
 	subscribeDocs = this.docVersion.subscribe;
 	getDocsVersion = this.docVersion.get;

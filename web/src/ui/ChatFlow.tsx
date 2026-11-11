@@ -4,7 +4,7 @@
  * Seat 外层 key 带会话 id 前缀：切换会话强制 remount（内容不同源）。
  */
 
-import { memo, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { failureCardText, store, type FlowNode, type ToolCard } from "../store/app-store";
 import { useApp, useFlowKeys, useNode } from "./hooks";
 import { IncrementalMarkdown } from "../markdown/incremental";
@@ -284,7 +284,24 @@ function MessageActions({
 
 // —— 运行状态行（DSH .running：0.5px 分隔线 + 星标 + shimmer 文字） ——
 
+/**
+ * 运行状态行：带实时耗时（对齐 dsh 的「深度求索中，用时 N 秒…」）。
+ *
+ * 计时用组件本地 state 每秒推进，**不写进 store**：store 的通知会连带重渲侧栏与
+ * composer，而这里只需要重渲这一行。运行结束（busy=false）时本行会被移除，
+ * 最终耗时由落定条目的状态行负责显示。
+ */
 function RunningRow(): ReactNode {
+	const startedAt = store.getRunStartedAt();
+	const [now, setNow] = useState(() => Date.now());
+
+	useEffect(() => {
+		if (startedAt === undefined) return;
+		const timer = window.setInterval(() => setNow(Date.now()), 1000);
+		return () => window.clearInterval(timer);
+	}, [startedAt]);
+
+	const elapsed = startedAt === undefined ? undefined : Math.max(1, Math.round((now - startedAt) / 1000));
 	return (
 		<div className="running">
 			<span className="running-divider" />
@@ -292,7 +309,9 @@ function RunningRow(): ReactNode {
 				<span className="running-icon">
 					<StarIcon width={14} height={14} />
 				</span>
-				<span className="running-text">Stella 正在运行…</span>
+				<span className="running-text">
+					{elapsed === undefined ? "Stella 正在运行…" : `Stella 正在运行… 用时 ${elapsed} 秒`}
+				</span>
 			</span>
 		</div>
 	);

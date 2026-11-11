@@ -354,6 +354,22 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 		};
 	}, [app.conversationId]);
 
+	// 运行结束的那一帧再补一次贴底。
+	// 偶发竞态：最后一个 chunk 与完成事件同帧到达时，ResizeObserver 回调读到的还是
+	// 布局前的 scrollHeight，于是停在距底 100+px 处不再跟随（评审在 4 次运行里见到 1 次）。
+	// 这里只在"用户本来就在跟随"时补，不抢回主动向上翻阅的人。
+	const busyRef = useRef(app.busy);
+	useEffect(() => {
+		const wasBusy = busyRef.current;
+		busyRef.current = app.busy;
+		if (!wasBusy || app.busy) return;
+		if (!followingRef.current) return;
+		requestAnimationFrame(() => {
+			const scroller = scrollerRef.current;
+			if (scroller !== null && followingRef.current) scroller.scrollTop = scroller.scrollHeight;
+		});
+	}, [app.busy]);
+
 	const heroMode = app.heroEmpty || app.blank;
 	const compact = heroMode;
 	const title = app.conversations.find((c) => c.id === app.conversationId)?.title ?? "新对话";
