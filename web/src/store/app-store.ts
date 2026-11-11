@@ -307,6 +307,10 @@ export class AppStore {
 	private presetsLoadedAt = 0;
 	private contextKey = "";
 	private contextTimer: number | undefined;
+	/** 最近一次收到 SSE 事件（view / ping）的时间；用于心跳超时后主动重连。 */
+	private lastEventAt = 0;
+	/** 心跳守护定时器。 */
+	private watchdog: number | undefined;
 	private toastTimer: number | undefined;
 	private framePending = false;
 	private pendingStreamingText: string | undefined;
@@ -448,6 +452,8 @@ export class AppStore {
 	switchTo(id: number): void {
 		this.source?.close();
 		this.source = undefined;
+		window.clearInterval(this.watchdog);
+		this.watchdog = undefined;
 		this.view = null;
 		this.transcript.reset();
 		this.contextKey = "";
@@ -509,13 +515,17 @@ export class AppStore {
 		source.addEventListener("view", (e) => {
 			const view = JSON.parse((e as MessageEvent<string>).data) as SseView;
 			if (view.conversation.id !== this.app.get().conversationId) return;
+			this.lastEventAt = Date.now();
 			this.view = view;
 			this.transcript.merge(view);
 			this.setConnected(true);
 			this.publish();
 			this.scheduleContextRefresh(id);
 		});
-		source.addEventListener("ping", () => this.setConnected(true));
+		source.addEventListener("ping", () => {
+			this.lastEventAt = Date.now();
+			this.setConnected(true);
+		});
 		source.onerror = () => {
 			this.setConnected(false);
 			if (this.source !== source) return;
@@ -526,7 +536,34 @@ export class AppStore {
 				if (this.app.get().conversationId === id && this.source === undefined) this.connect(id);
 			}, 1000);
 		};
+		this.lastEventAt = Date.now();
 		this.source = source;
+		this.startWatchdog(id, source);
+	}
+
+	/**
+	 * 心跳守护：服务端每 15s 发一次 ping，60s 内一个事件都没有就判定连接已死并重建。
+	 * 覆盖 EventSource 不报错但流已静默中断的场景（dev server 重启后最典型：
+	 * 页面还挂着 busy=true、回答永远不渲染，必须手动刷新）。
+	 */
+	private startWatchdog(id: number, source: EventSource): void {
+		window.clearInterval(this.watchdog);
+		this.watchdog = window.setInterval(() => {
+			if (this.source !== source) return;
+			if (this.app.get().conversationId !== id) return;
+			// 运行中更灵敏（20s = 漏掉一个 ping 再多一档），空闲时宽松（60s）
+			const staleMs = this.app.get().busy ? 20_000 : 60_000;
+			if (Date.now() - this.lastEventAt < staleMs) return;
+			// 静默超时：关旧连接、标记离线、重建（重建时不带 from，让服务端回完整窗口）
+			source.close();
+			this.source = undefined;
+			this.setConnected(false);
+			this.view = null;
+			this.transcript.reset();
+			this.structureSignature = "";
+			this.clearFlow();
+			this.connect(id);
+		}, 10_000);
 	}
 
 	private setConnected(online: boolean): void {
