@@ -48,10 +48,12 @@ import type { Conversation, EntryId, ModelRef, Submission, SubmissionId, Tx } fr
 import { AssistantEntry, ConversationBusy, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { ConversationMeta, initialConversationMeta, truncateTitle } from "./conversations.js";
+import { renderSkillsCatalog, SkillSnapshot, type Skill } from "./extensions/skills/index.js";
+import { bearerToken, clientSource, createAuthGate, issueToken, loginKeyMatches, verifyToken } from "./auth.js";
 import { resolvePresetAgent, presetSummaries } from "./presets.js";
 import { buildModelCatalog } from "./providers.js";
 import type { Stella } from "./stella.js";
@@ -76,6 +78,49 @@ export function createApp(stella: Stella): Hono {
 	app.notFound((c) => c.json({ error: "接口不存在" }, 404));
 
 	app.get("/api/health", (c) => c.json({ ok: true }));
+
+	// —— 准入：登录密钥（GLOSSARY「准入」） ——
+	//
+	// 无用户系统：全进程只有一枚登录密钥（`STELLA_TOKEN`）。登录用密钥换一枚 HMAC 票据，
+	// 之后一律 `Authorization: Bearer <票据>`；服务端不存会话表，轮换密钥即全员失效。
+	// 免登录的情形只有一种：faux 模式（测试与免 key 体验）。
+	const gate = stella.config.token === undefined ? undefined : createAuthGate(stella.config.token);
+
+	// 这两个端点必须在鉴权中间件之前注册（登录页本身当然不能要求先登录）。
+	app.get("/api/auth/status", (c) => {
+		if (gate === undefined) return c.json({ authRequired: false, ok: true });
+		const checked = verifyToken(gate.key, bearerToken(c));
+		return c.json(
+			checked.ok
+				? { authRequired: true, ok: true, expiresAt: checked.expiresAt }
+				: { authRequired: true, ok: false },
+		);
+	});
+
+	app.post("/api/auth/login", async (c) => {
+		if (gate === undefined) return c.json({ authRequired: false, ok: true });
+		const source = clientSource(c);
+		const waitMs = gate.throttle.retryAfterMs(source);
+		if (waitMs > 0) {
+			const seconds = Math.ceil(waitMs / 1000);
+			return c.json({ error: `尝试过于频繁，请 ${seconds} 秒后再试` }, 429, { "retry-after": String(seconds) });
+		}
+		const body = (await c.req.json().catch(() => undefined)) as { key?: unknown } | undefined;
+		const candidate = typeof body?.key === "string" ? body.key.trim() : "";
+		if (candidate.length === 0) return c.json({ error: "请输入登录密钥" }, 400);
+		if (!loginKeyMatches(gate.key, candidate)) {
+			gate.throttle.recordFailure(source);
+			return c.json({ error: "登录密钥不正确" }, 401);
+		}
+		gate.throttle.reset(source);
+		const issued = issueToken(gate.key);
+		return c.json({ ok: true, token: issued.token, expiresAt: issued.expiresAt });
+	});
+
+	// 中间件必须在其余 /api/* 路由之前注册（Hono 的 use 只作用于此后的处理器）。
+	// /api/health 在中间件内部放行（探针不该要凭据）。SSE 不需要特例：
+	// 实时通道用 fetch 读流，`Authorization` 头能正常带上。
+	if (gate !== undefined) app.use("/api/*", gate.middleware);
 
 	// —— 模型目录：可用模型列表 + 默认模型 ——
 
@@ -116,11 +161,47 @@ export function createApp(stella: Stella): Hono {
 
 	app.get("/api/presets", (c) =>
 		c.json({
-			presets: presetSummaries(stella.settings, stella.registry),
+			presets: presetSummaries(stella.settings, stella.registry, stella.skills.skills),
 			defaultPreset: stella.settings.runtime.defaultPreset,
 			defaultMaxTurns: stella.settings.runtime.defaultMaxTurns,
 		}),
 	);
+
+	// —— 技能：目录扫描结果 + 预设的技能开关 ——
+
+	app.get("/api/skills", (c) => {
+		// 管理页每次打开都重扫一次：watcher 丢事件时不必重启服务。只影响新会话（快照不读目录）。
+		stella.skills.reload();
+		return c.json({
+			dir: stella.skills.dir,
+			skills: stella.skills.skills,
+			diagnostics: stella.skills.diagnostics,
+		});
+	});
+
+	// 写回 data/stella.config.json 的预设；null = 全部技能，[] = 全禁，数组 = 白名单。
+	app.put("/api/presets/:id/skills", async (c) => {
+		const id = c.req.param("id");
+		if (stella.settings.preset(id) === undefined) return c.json({ error: "预设不存在" }, 404);
+		let body: unknown;
+		try {
+			body = await c.req.json();
+		} catch {
+			return c.json({ error: "请求体应为 JSON" }, 400);
+		}
+		const requested = readOptionalStringArray(body, "skills");
+		if (requested === undefined) return c.json({ error: "skills 应为字符串数组或 null" }, 400);
+		const skills = requested === null ? null : [...new Set(requested)];
+		if (skills !== null) {
+			const known = new Set(stella.skills.skills.map((skill) => skill.name));
+			const unknown = skills.filter((name) => !known.has(name));
+			if (unknown.length > 0) return c.json({ error: `未知技能：${unknown.join("、")}` }, 400);
+		}
+		if (!stella.settings.updatePresetSkills(id, skills)) {
+			return c.json({ error: `写入配置文件失败：${stella.settings.path}` }, 500);
+		}
+		return c.json({ ok: true, preset: id, skills });
+	});
 
 	// —— 会话 ——
 
@@ -163,12 +244,19 @@ export function createApp(stella: Stella): Hono {
 		}
 		const presetId = requestedPreset ?? stella.settings.runtime.defaultPreset;
 		// 预设只决定能力与人设；模型仍用服务端默认值（之后由模型选择器独立切换）。
-		const { agent } = resolvePresetAgent(stella.settings, stella.registry, presetId, {
-			provider: stella.defaultModel.provider,
-			modelId: stella.defaultModel.modelId,
-		});
+		const { agent, skills, preset } = resolvePresetAgent(
+			stella.settings,
+			stella.registry,
+			presetId,
+			{
+				provider: stella.defaultModel.provider,
+				modelId: stella.defaultModel.modelId,
+			},
+			stella.skills.skills,
+		);
+		// 用解析后的预设 id：配置在请求过程中被热更新删除时，回落值与请求值可能不同。
 		const init = (tx: Tx, conversationId: Conversation["id"]): Promise<void> =>
-			writeMeta(tx, conversationId, presetId);
+			writeMeta(tx, conversationId, preset.id, skills);
 		// 创建会话的同一 commit 写入元数据（创建时间、预设）；首个会话是保留的 root 会话，之后是独立普通会话。
 		const root = await harness.conversation(ROOT_CONVERSATION_ID, BACKGROUND_CONTEXT);
 		const conversation =
@@ -178,7 +266,7 @@ export function createApp(stella: Stella): Hono {
 						{ ownership: { kind: "ownerless" }, agent, init },
 						BACKGROUND_CONTEXT,
 					);
-		return c.json({ id: conversation.id, preset: presetId }, 201);
+		return c.json({ id: conversation.id, preset: preset.id }, 201);
 	});
 
 	// —— 删除：pi-durable 无移除会话的 API，删除为宿主层归档（见 conversations.ts）——
@@ -276,8 +364,30 @@ export function createApp(stella: Stella): Hono {
 			}
 		}
 
-		const content = readContent(body);
-		if (content === undefined) return c.json({ error: "缺少非空的消息文本 content" }, 400);
+		// `/skill <名字> [要求]`：把技能正文拼在用户要求前面（正文不进系统提示，按需加载）。
+		const requestedSkill = readOptionalString(body, "skill");
+		if (requestedSkill === null) return c.json({ error: "skill 应为非空字符串" }, 400);
+		const rawContent = readContent(body);
+		if (rawContent === undefined && requestedSkill === undefined) {
+			return c.json({ error: "缺少非空的消息文本 content" }, 400);
+		}
+		const request = rawContent ?? "";
+		const expansion =
+			requestedSkill === undefined
+				? undefined
+				: await expandSkillMessage(stella, conversation.id, requestedSkill, request);
+		if (expansion !== undefined && "error" in expansion) {
+			return c.json(
+				{
+					error:
+						expansion.error === "missing"
+							? `技能 "${requestedSkill}" 不在本会话的可用清单里`
+							: `技能 "${requestedSkill}" 的文件读不到（可能已删除或没有权限）`,
+				},
+				400,
+			);
+		}
+		const content = expansion === undefined ? request : expansion.text;
 		const requestId = readRequestId(body);
 		const whenBusy = readWhenBusy(body);
 		if (whenBusy === null) {
@@ -296,7 +406,8 @@ export function createApp(stella: Stella): Hono {
 			const submissionId = await conversation.commit(async (tx) => {
 				const id = await conversation.submit(tx, draft);
 				const meta = await tx.doc(ConversationMeta, conversation.id);
-				if (meta.title === null) meta.title = truncateTitle(content);
+				// 标题取用户写的要求，不取拼接进来的技能正文（否则标题会变成 frontmatter）。
+				if (meta.title === null) meta.title = truncateTitle(request.length > 0 ? request : "技能");
 				return id;
 			}, BACKGROUND_CONTEXT);
 			// 运行在后台进行；条目（用户消息与回答）经 watch/SSE 到达前端。
@@ -570,6 +681,76 @@ function readContent(body: unknown): string | undefined {
 	return trimmed.length > 0 ? trimmed : undefined;
 }
 
+/** `/skill` 展开的结果：成功给正文，失败区分「不在会话清单」与「文件读不到」。 */
+export type SkillExpansion = { readonly text: string } | { readonly error: "missing" | "unreadable" };
+
+/**
+ * 把技能正文拼在用户要求前面。技能只在本会话创建时的快照里找，不读目录：
+ * 快照之外的技能（后来新增的、或预设置没开）返回 `missing`。
+ */
+export async function expandSkillMessage(
+	stella: Stella,
+	conversationId: Conversation["id"],
+	name: string,
+	request: string,
+): Promise<SkillExpansion> {
+	const snapshot = await stella.harness.snapshot(SkillSnapshot, conversationId, BACKGROUND_CONTEXT);
+	if (snapshot === undefined) return { error: "missing" };
+	let entries: unknown;
+	try {
+		entries = JSON.parse(snapshot.entries);
+	} catch {
+		return { error: "missing" };
+	}
+	if (!Array.isArray(entries)) return { error: "missing" };
+	const entry = entries.find(
+		(item): item is Pick<Skill, "name" | "filePath" | "baseDir"> =>
+			typeof item === "object" &&
+			item !== null &&
+			(item as { name?: unknown }).name === name &&
+			typeof (item as { filePath?: unknown }).filePath === "string" &&
+			typeof (item as { baseDir?: unknown }).baseDir === "string",
+	);
+	if (entry === undefined) return { error: "missing" };
+	// 快照由服务端扫描写入，这里再守一道：只读技能目录里的文件。
+	const inside = relative(resolve(stella.skills.dir), resolve(entry.filePath));
+	if (inside.startsWith("..") || isAbsolute(inside)) return { error: "unreadable" };
+	let body: string;
+	try {
+		body = readFileSync(entry.filePath, "utf8");
+	} catch {
+		return { error: "unreadable" };
+	}
+	const content = stripFrontmatter(body);
+	// 手动加载的技能可能从未进过系统提示，所以把目录基准一起告诉模型。
+	const header = `Loaded skill "${entry.name}". Resolve relative paths against its directory: ${entry.baseDir}\n\n`;
+	const block = `<skill name="${entry.name}" location="${entry.filePath}">\n${content}\n</skill>`;
+	return { text: request.length > 0 ? `${header}${block}\n\n---\n\n${request}` : `${header}${block}` };
+}
+
+/** 去掉 SKILL.md 开头的 frontmatter，只把正文发给模型。 */
+function stripFrontmatter(text: string): string {
+	const normalized = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+	if (!normalized.startsWith("---")) return normalized;
+	const end = normalized.indexOf("\n---", 3);
+	if (end < 0) return normalized;
+	return normalized.slice(end + 4).replace(/^\n+/, "");
+}
+
+/** 可选字符串数组字段：缺失或非法返回 undefined，null 表示「全部」。 */
+function readOptionalStringArray(body: unknown, key: string): readonly string[] | null | undefined {
+	if (typeof body !== "object" || body === null) return undefined;
+	const value = (body as Record<string, unknown>)[key];
+	if (value === null) return null;
+	if (!Array.isArray(value)) return undefined;
+	const names: string[] = [];
+	for (const item of value) {
+		if (typeof item !== "string" || item.trim().length === 0) return undefined;
+		names.push(item.trim());
+	}
+	return names;
+}
+
 /** 可选字符串字段：缺失返回 undefined，非法（不是字符串/空串）返回 null。 */
 function readOptionalString(body: unknown, key: string): string | undefined | null {
 	if (typeof body !== "object" || body === null) return undefined;
@@ -624,8 +805,18 @@ async function requireConversation(stella: Stella, rawId: string): Promise<Conve
 }
 
 /** 创建会话的 init 回调：在创建 commit 里写入会话元数据初值（创建时间、预设）。 */
-async function writeMeta(tx: Tx, conversationId: Conversation["id"], preset: string): Promise<void> {
+async function writeMeta(
+	tx: Tx,
+	conversationId: Conversation["id"],
+	preset: string,
+	skills: readonly Skill[],
+): Promise<void> {
 	Object.assign(await tx.doc(ConversationMeta, conversationId), initialConversationMeta(), { preset });
+	// 技能清单在这一刻定格：之后目录增删改都不会动这个会话的系统提示（保住模型侧的前缀缓存）。
+	Object.assign(await tx.doc(SkillSnapshot, conversationId), {
+		catalog: renderSkillsCatalog(skills),
+		entries: JSON.stringify(skills),
+	});
 }
 
 function notFoundConversation(c: Context): Response {

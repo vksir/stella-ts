@@ -23,7 +23,7 @@ pi-durable 的 agent 组装（扩展、工具、指令、`maxTurns`）按会话�
 - `.env`：provider key、端口、数据目录、默认模型、attribution URL——变更需要重启。
 - `stella.config.json`：`HarnessSettings`、`defaultPreset`、`defaultMaxTurns`、`presets`——热更新。
 
-`settings` 以 **getter** 形式传给 `Harness.open`（pi-durable 每次使用时重新读取），因此文件变更不需要重启 Harness。`fs.watch` 监听所在目录（编辑器常用替换文件的方式保存），防抖后重读；解析失败保留上一份生效配置并记录错误；文件不存在时静默使用内置默认值；**从不写回**。文件里的扩展/工具名字未安装时跳过并记录，不阻止会话创建。
+`settings` 以 **getter** 形式传给 `Harness.open`（pi-durable 每次使用时重新读取），因此文件变更不需要重启 Harness。`fs.watch` 监听所在目录（编辑器常用替换文件的方式保存），防抖后重读；解析失败保留上一份生效配置并记录错误；文件不存在时静默使用内置默认值；**从不写回**（后由 [ADR-0005](./0005-skills-as-extension-with-session-snapshot.md) 修订：部署字段仍只读，管理页「技能」开关会写回 `presets[].skills`）。文件里的扩展/工具/技能名字未安装或未发现时跳过并记录，不阻止会话创建。
 
 ## 考虑过的替代方案
 

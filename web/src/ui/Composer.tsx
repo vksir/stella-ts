@@ -4,17 +4,21 @@
  * - 工具行：左 workspace chip + 预设 chip；右 收藏 + 模型下拉 + 停止/发送。
  * - 队列条：运行中排队项（插话/编辑/删除）+ busyEnter 切换。
  * - 用量：上下文环 + 累计 token/成本，点开分解面板。
+ * - 指令菜单：整条输入还是 `/片段` 时在卡片上方弹出可选项（↑↓/Enter/Tab/Esc）。
  * 输入框为受控组件，本地 state（不经 store，避免光标跳动）。
  */
 
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { store } from "../store/app-store";
+import { type CommandSpec, availableCommands, matchCommands, slashQuery, usageOf } from "../store/commands";
 import { modelKey } from "../api";
 import { isComposingEvent } from "./composer-keys";
 import { ChevronDownIcon, FolderIcon, SendIcon, StarFilledIcon, StarOutlineIcon, StopIcon } from "./icons";
 import { useApp } from "./hooks";
 
 const INPUT_MAX_HEIGHT = 336;
+/** 菜单最多列出的指令条数（再多也没人往下翻）。 */
+const MENU_LIMIT = 8;
 
 // —— Composer 席位 ——
 
@@ -33,6 +37,29 @@ function Composer(): ReactNode {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const disabled = app.conversationId === undefined;
+
+	// —— 指令菜单 ——
+	// query 是 `/` 之后的片段；出现空白即进入参数区，菜单自然收起。
+	// dismissed 只由用户动作（Esc / 选中）置位，任何输入都会复位。
+	const [active, setActive] = useState(0);
+	const [dismissed, setDismissed] = useState(false);
+	const query = disabled ? undefined : slashQuery(value);
+	const options = query === undefined ? [] : matchCommands(query, availableCommands({ busy: app.busy })).slice(0, MENU_LIMIT);
+	const menuOpen = query !== undefined && !dismissed && options.length > 0;
+	const activeIndex = Math.min(active, Math.max(0, options.length - 1));
+	const itemRefs = useRef(new Map<string, HTMLDivElement>());
+
+	// 片段变化后高亮回到第一条
+	useEffect(() => {
+		setActive(0);
+	}, [query]);
+
+	// 键盘上下移动时把高亮项滚进视口
+	useEffect(() => {
+		if (!menuOpen) return;
+		const name = options[activeIndex]?.name;
+		if (name !== undefined) itemRefs.current.get(name)?.scrollIntoView({ block: "nearest" });
+	}, [menuOpen, activeIndex, query]);
 
 	// 自动长高
 	const autosize = (): void => {
@@ -85,8 +112,84 @@ function Composer(): ReactNode {
 	const busy = app.busy;
 	const sendLabel = !busy ? "发送" : app.busyEnter === "steer" ? "插话发送" : "排队发送";
 
+	/** 选中一条指令：补全成 `/名字 ` 并收起菜单，焦点与光标留在输入框。 */
+	const accept = (spec: CommandSpec): void => {
+		const next = `/${spec.name} `;
+		setValue(next);
+		setDismissed(true);
+		requestAnimationFrame(() => {
+			autosize();
+			const el = textareaRef.current;
+			el?.focus();
+			el?.setSelectionRange(next.length, next.length);
+		});
+	};
+
+	const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
+		// 输入法组合期间（中文/日文/韩文选词）按 Enter 是"确认候选"，
+		// 不能当发送：否则用户敲拼音按回车会把半截内容发出去。
+		// Safari 老版本不填 isComposing，用 keyCode 229 兜底。
+		if (isComposingEvent(e)) return;
+		if (menuOpen) {
+			const count = options.length;
+			if (e.key === "ArrowDown") {
+				e.preventDefault();
+				setActive((activeIndex + 1) % count);
+				return;
+			}
+			if (e.key === "ArrowUp") {
+				e.preventDefault();
+				setActive((activeIndex - 1 + count) % count);
+				return;
+			}
+			if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+				e.preventDefault();
+				// 菜单打开时 Enter 是"确认指令"，第一次回车只补全，再回车才提交
+				accept(options[activeIndex]!);
+				return;
+			}
+			if (e.key === "Escape") {
+				e.preventDefault();
+				setDismissed(true);
+				return;
+			}
+		}
+		if (e.key === "Enter" && !e.shiftKey) {
+			e.preventDefault();
+			send(e.ctrlKey || e.metaKey ? "alternate" : "primary");
+		}
+	};
+
 	return (
 		<footer id="composer" className="input-bar">
+			{menuOpen && (
+				<div id="cmd-menu" className="cmd-pop" role="listbox" aria-label="可选指令">
+					<div className="cmd-head">指令</div>
+					<div className="cmd-list">
+						{options.map((spec, index) => (
+							<div
+								key={spec.name}
+								ref={(el) => {
+									if (el === null) itemRefs.current.delete(spec.name);
+									else itemRefs.current.set(spec.name, el);
+								}}
+								id={`cmd-option-${spec.name}`}
+								className={`cmd-item${index === activeIndex ? " is-active" : ""}`}
+								role="option"
+								aria-selected={index === activeIndex}
+								// 用 mousedown 抢先于 textarea 失焦：点选后光标仍在输入框里
+								onMouseDown={(e) => e.preventDefault()}
+								onMouseEnter={() => setActive(index)}
+								onClick={() => accept(spec)}
+							>
+								<span className="cmd-name">{usageOf(spec)}</span>
+								<span className="cmd-desc">{spec.description}</span>
+							</div>
+						))}
+					</div>
+					<div className="cmd-foot">↑↓ 选择 · Enter 补全 · Esc 关闭</div>
+				</div>
+			)}
 			<div className="input-scroll">
 				<div className="grow">
 					<textarea
@@ -94,23 +197,19 @@ function Composer(): ReactNode {
 						ref={textareaRef}
 						rows={1}
 						aria-label="消息输入框"
+						aria-expanded={menuOpen}
+						aria-controls={menuOpen ? "cmd-menu" : undefined}
+						aria-activedescendant={menuOpen ? `cmd-option-${options[activeIndex]?.name ?? ""}` : undefined}
 						disabled={disabled}
-						placeholder={disabled ? "先新建一个会话…" : "给 Stella 发消息…"}
+						placeholder={disabled ? "先新建一个会话…" : "给 Stella 发消息…（输入 / 调用指令）"}
 						value={value}
 						onChange={(e) => {
 							setValue(e.target.value);
+							setDismissed(false);
 							autosize();
 						}}
-						onKeyDown={(e) => {
-							// 输入法组合期间（中文/日文/韩文选词）按 Enter 是"确认候选"，
-							// 不能当发送：否则用户敲拼音按回车会把半截内容发出去。
-							// Safari 老版本不填 isComposing，用 keyCode 229 兜底。
-							if (isComposingEvent(e)) return;
-							if (e.key === "Enter" && !e.shiftKey) {
-								e.preventDefault();
-								send(e.ctrlKey || e.metaKey ? "alternate" : "primary");
-							}
-						}}
+						onBlur={() => setDismissed(true)}
+						onKeyDown={onKeyDown}
 					/>
 				</div>
 			</div>

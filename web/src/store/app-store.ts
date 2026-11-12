@@ -36,10 +36,29 @@ import {
 	resultText,
 } from "../api";
 import { failureCardText, noticeForEntry, stoppedText, summarizeToolCall } from "./labels";
+import { type CommandSpec, parseCommand } from "./commands";
+import {
+	authHeaders,
+	clearCredential,
+	fetchAuthStatus,
+	loginRequest,
+	notifyUnauthorized,
+	setUnauthorizedHandler,
+	writeCredential,
+} from "../auth";
+import { SseHttpError, type SseFrame, streamSse } from "../sse";
 import { NodeBus, Source } from "./node-bus";
 import { Transcript } from "./transcript";
 
 export { failureCardText, stoppedText };
+
+/** 准入状态：问服务端中 / 等登录 / 可用。 */
+export type AuthState = "checking" | "gated" | "ready";
+
+/** SSE 传输句柄：fetch 流没有 close()，实现里换成 abort。 */
+interface SseHandle {
+	close(): void;
+}
 
 // —— 流节点 ——
 
@@ -98,6 +117,10 @@ export interface AppSnapshot {
 	blank: boolean;
 	toast: string | null;
 	confirmTarget: ConversationSummary | null;
+	/** 准入状态：checking → gated / ready（ADR-0004）。 */
+	auth: AuthState;
+	/** 服务端是否启用登录（faux 且未配 STELLA_TOKEN 时为 false）。 */
+	authRequired: boolean;
 }
 
 // —— 微型 Source：引用不变不通知 ——
@@ -215,6 +238,8 @@ export class AppStore {
 		blank: true,
 		toast: null,
 		confirmTarget: null,
+		auth: "checking",
+		authRequired: false,
 	});
 
 	// flow 级
@@ -231,7 +256,7 @@ export class AppStore {
 
 	// 内部状态（派生快照用）
 	private view: SseView | null = null;
-	private source: EventSource | undefined;
+	private source: SseHandle | undefined;
 	private transcript: Transcript<ChatEntry>;
 	private presetsLoadedAt = 0;
 	private contextKey = "";
@@ -326,6 +351,26 @@ export class AppStore {
 	// —— 启动 ——
 
 	async boot(): Promise<void> {
+		setUnauthorizedHandler(() => this.handleUnauthorized());
+		try {
+			const status = await fetchAuthStatus();
+			this.patchApp({ authRequired: status.authRequired });
+			if (status.authRequired && !status.ok) {
+				this.patchApp({ auth: "gated" });
+				return;
+			}
+		} catch (error) {
+			// 服务端不可达：把界面交给登录页（它会显示错误），不留一片空白。
+			this.patchApp({ auth: "gated" });
+			this.showError(error);
+			return;
+		}
+		this.patchApp({ auth: "ready" });
+		await this.loadSession();
+	}
+
+	/** 准入通过后拉取会话数据（登录成功与首次启动共用）。 */
+	private async loadSession(): Promise<void> {
 		void this.loadModelCatalog().catch((error) => this.showError(error));
 		void this.loadPresets().catch((error) => this.showError(error));
 		await this.refreshList();
@@ -335,6 +380,55 @@ export class AppStore {
 		} else {
 			this.switchTo(first);
 		}
+	}
+
+	/** 用登录密钥换票据并进入主界面（错误直接上抛给登录页显示）。 */
+	async submitLogin(key: string): Promise<void> {
+		const credential = await loginRequest(key.trim());
+		if (credential.token.length > 0) writeCredential(credential);
+		this.patchApp({ auth: "ready", toast: null });
+		await this.loadSession();
+	}
+
+	/** 退出：只清本浏览器的票据（服务端无状态，不能单独撑销；见 ADR-0004）。 */
+	logout(): void {
+		// 未启用登录时没有可退出的东西（否则会卡在一个永远进不去的门禁上）。
+		if (!this.app.get().authRequired) return;
+		clearCredential();
+		this.resetSession();
+		this.patchApp({ auth: "gated" });
+	}
+
+	/** 任何请求 401：退回门禁，不清草稿（只丢服务端数据）。 */
+	private handleUnauthorized(): void {
+		if (this.app.get().auth !== "ready") return;
+		clearCredential();
+		this.resetSession();
+		this.patchApp({ auth: "gated", toast: "登录已失效，请重新登录" });
+	}
+
+	/** 断开实时通道并丢弃服务端数据；纯前端状态（草稿等）不动。 */
+	private resetSession(): void {
+		this.source?.close();
+		this.source = undefined;
+		window.clearInterval(this.watchdog);
+		this.watchdog = undefined;
+		this.view = null;
+		this.transcript.reset();
+		this.clearFlow();
+		this.lastEventAt = 0;
+		this.patchApp({
+			conversations: [],
+			conversationId: undefined,
+			connected: false,
+			workspace: undefined,
+			preset: null,
+			context: null,
+			busy: false,
+			heroEmpty: false,
+			blank: true,
+			confirmTarget: null,
+		});
 	}
 
 	async refreshList(): Promise<void> {
@@ -446,12 +540,29 @@ export class AppStore {
 
 	// —— SSE ——
 
+	/**
+	 * 建立实时通道：`fetch` 读流（Bearer 走请求头），不用 `EventSource`（不能设头）。
+	 * 断线重连、静默守护与 `?from=` 续订语义与旧实现一致，只换了传输原语。
+	 */
 	private connect(id: number): void {
 		const newest = this.transcript.newest;
 		const query = newest === undefined ? "" : `?from=${newest + 1}`;
-		const source = new EventSource(`/api/conversations/${id}/events${query}`);
-		source.addEventListener("view", (e) => {
-			const view = JSON.parse((e as MessageEvent<string>).data) as SseView;
+		const controller = new AbortController();
+		const source: SseHandle = { close: (): void => controller.abort() };
+
+		const onFrame = (frame: SseFrame): void => {
+			if (frame.event === "ping") {
+				this.lastEventAt = Date.now();
+				this.setConnected(true);
+				return;
+			}
+			if (frame.event !== "view") return;
+			let view: SseView;
+			try {
+				view = JSON.parse(frame.data) as SseView;
+			} catch {
+				return; // 半帧/脏数据：丢掉，等下一次 commit 的完整 view
+			}
 			if (view.conversation.id !== this.app.get().conversationId) return;
 			this.lastEventAt = Date.now();
 			this.view = view;
@@ -460,12 +571,9 @@ export class AppStore {
 			this.setConnected(true);
 			this.publish();
 			this.scheduleContextRefresh(id);
-		});
-		source.addEventListener("ping", () => {
-			this.lastEventAt = Date.now();
-			this.setConnected(true);
-		});
-		source.onerror = () => {
+		};
+
+		const onLost = (): void => {
 			this.setConnected(false);
 			if (this.source !== source) return;
 			source.close();
@@ -475,9 +583,28 @@ export class AppStore {
 				if (this.app.get().conversationId === id && this.source === undefined) this.connect(id);
 			}, 1000);
 		};
+
 		this.lastEventAt = Date.now();
 		this.source = source;
 		this.startWatchdog(id, source);
+		void (async () => {
+			try {
+				await streamSse(`/api/conversations/${id}/events${query}`, { onFrame }, controller.signal);
+				if (!controller.signal.aborted) onLost();
+			} catch (error) {
+				if (controller.signal.aborted) return; // 主动断开（切会话/删除/守护重建）
+				if (error instanceof SseHttpError && (error.status === 401 || error.status === 403)) {
+					this.handleUnauthorized();
+					return;
+				}
+				if (error instanceof SseHttpError && error.status === 404) {
+					// 会话已不存在（例如在另一个标签页被删）：重连只会无限 404，停下来。
+					this.setConnected(false);
+					return;
+				}
+				onLost();
+			}
+		})();
 	}
 
 	/**
@@ -485,7 +612,7 @@ export class AppStore {
 	 * 覆盖 EventSource 不报错但流已静默中断的场景（dev server 重启后最典型：
 	 * 页面还挂着 busy=true、回答永远不渲染，必须手动刷新）。
 	 */
-	private startWatchdog(id: number, source: EventSource): void {
+	private startWatchdog(id: number, source: SseHandle): void {
 		window.clearInterval(this.watchdog);
 		this.watchdog = window.setInterval(() => {
 			if (this.source !== source) return;
@@ -810,10 +937,10 @@ export class AppStore {
 	}
 
 	private async submitMessage(content: string, gesture: "primary" | "alternate"): Promise<void> {
-		const compact = /^\/compact(?:\s+([\s\S]*))?$/.exec(content);
-		if (compact !== null) {
-			const instructions = compact[1]?.trim();
-			await this.runCompact(instructions === undefined || instructions.length === 0 ? undefined : instructions);
+		// 已登记的斜杠指令走本地动作，不进消息流（未登记的 `/xxx` 仍当普通消息发给模型）
+		const command = parseCommand(content);
+		if (command !== undefined) {
+			await this.runCommand(command);
 			return;
 		}
 		const busy = this.view?.docs["pi.live"]?.run != null;
@@ -838,11 +965,65 @@ export class AppStore {
 		return true;
 	}
 
+	/** 加载技能：服务端按会话快照找到正文，把它拼在要求前面作为一条用户消息。 */
+	async submitSkill(skill: string, request: string): Promise<void> {
+		const id = this.app.get().conversationId;
+		if (id === undefined) return;
+		const busy = this.view?.docs["pi.live"]?.run != null;
+		const whenBusy = busy ? this.modeForGesture("primary") : undefined;
+		const result = await postOk(`/api/conversations/${id}/messages`, {
+			content: request.length > 0 ? request : `请按技能「${skill}」的说明执行。`,
+			skill,
+			requestId: crypto.randomUUID(),
+			...(whenBusy === undefined ? {} : { whenBusy }),
+		});
+		if (!result.ok) {
+			this.showToast(result.error);
+			return;
+		}
+		this.emit("scroll-instant");
+		void this.refreshList().catch(() => undefined);
+	}
+
 	async retryContinue(): Promise<void> {
 		const id = this.app.get().conversationId;
 		if (id === undefined) return;
 		const result = await postOk(`/api/conversations/${id}/messages`, { continue: true });
 		if (!result.ok) this.showToast(result.error);
+	}
+
+	/** 本地指令：只处理已登记的名字（表见 store/commands.ts）。 */
+	private async runCommand(command: { spec: CommandSpec; args: string }): Promise<void> {
+		switch (command.spec.name) {
+			case "compact": {
+				const instructions = command.args.length === 0 ? undefined : command.args;
+				await this.runCompact(instructions);
+				return;
+			}
+			case "new": {
+				await this.createConversation();
+				return;
+			}
+			case "stop": {
+				if (this.view?.docs["pi.live"]?.run == null) {
+					this.showToast("当前没有运行中的回答");
+					return;
+				}
+				await this.stopRun();
+				return;
+			}
+			case "skill": {
+				const [name, ...rest] = command.args.split(/\s+/).filter((part) => part.length > 0);
+				if (name === undefined) {
+					this.showToast("用法：/skill <名字> [要求]");
+					return;
+				}
+				await this.submitSkill(name, rest.join(" "));
+				return;
+			}
+			default:
+				return;
+		}
 	}
 
 	private async runCompact(instructions: string | undefined): Promise<void> {
@@ -931,7 +1112,12 @@ export class AppStore {
 	private async deleteSubmission(id: number): Promise<string> {
 		const conversationId = this.app.get().conversationId;
 		if (conversationId === undefined) return "failed";
-		const response = await fetch(`/api/conversations/${conversationId}/submissions/${id}`, { method: "DELETE" });
+		// 直接 fetch，但必须补上登录票据与 401 处理（这里是全前端唯一绕过 fetchJson 的写请求）。
+		const response = await fetch(`/api/conversations/${conversationId}/submissions/${id}`, {
+			method: "DELETE",
+			headers: authHeaders(),
+		});
+		if (response.status === 401) notifyUnauthorized();
 		if (!response.ok) {
 			const body = (await response.json().catch(() => ({}))) as { error?: string };
 			this.showToast(body.error ?? `撤回失败（${response.status}）`);

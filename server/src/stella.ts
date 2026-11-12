@@ -29,9 +29,10 @@ import { dirname } from "node:path";
 import { parseModelSpec, type StellaConfig } from "./config.js";
 import { ConversationMeta, initialConversationMeta } from "./conversations.js";
 import { StellaGuard } from "./guard.js";
-import { StellaPersona } from "./persona.js";
+import { StellaPersona } from "./extensions/persona.js";
+import { StellaSkills, SkillsStore } from "./extensions/skills/index.js";
 import { StellaSettingsStore } from "./settings.js";
-import { StellaSubagent } from "./subagent.js";
+import { StellaSubagent } from "./extensions/subagent.js";
 import {
 	createModels,
 	discoverProviders,
@@ -54,6 +55,8 @@ export interface Stella {
 	readonly settings: StellaSettingsStore;
 	/** 扩展/工具注册表（预设按名字解析用）。 */
 	readonly registry: Registry;
+	/** 技能目录与扫描结果（新会话按预设白名单取用）。 */
+	readonly skills: SkillsStore;
 	/** faux 模式下的句柄：测试脚本用它固定模型回答。 */
 	readonly faux: ReturnType<typeof installFauxProvider> | undefined;
 	close(): Promise<void>;
@@ -113,6 +116,7 @@ export async function createStella(
 	const registry = createRegistry();
 	registry.install(await codingExtension()); // read / write / edit / bash（read 带图片）
 	registry.install(StellaPersona); // 万用日常型人设 section
+	registry.install(StellaSkills); // 系统提示里的技能索引（正文由 read 按需读取）
 	registry.install(StellaGuard); // 毁灭性命令兜底
 	registry.install(
 		createCodemodeExtension({
@@ -163,6 +167,8 @@ export async function createStella(
 	}
 	await mkdir(config.workspaceDir, { recursive: true }); // 默认工作区
 	settingsStore.startWatching(); // 目录已存在，首次启动也能监听配置文件
+	const skillsStore = new SkillsStore(config.skillsDir);
+	await skillsStore.start(); // 建技能目录、扫描一次、监听变化（只影响新会话）
 
 	const storage = config.faux ? new MemoryStorage() : await openNodeSqliteStorage(config.sqlitePath);
 	const harness = await Harness.open(
@@ -191,9 +197,11 @@ export async function createStella(
 		registeredProviders,
 		settings: settingsStore,
 		registry,
+		skills: skillsStore,
 		faux,
 		close: async () => {
 			settingsStore.stop();
+			skillsStore.stop();
 			await harness.close(BACKGROUND_CONTEXT);
 		},
 	};

@@ -18,6 +18,16 @@ export interface StellaConfig {
 	readonly faux: boolean;
 	/** server 监听端口。 */
 	readonly port: number;
+	/**
+	 * 监听地址（`STELLA_HOST`）。默认 `127.0.0.1`：只有本机能连；
+	 * 要对外（局域网、Docker、反向代理）必须显式设为 `0.0.0.0` 或具体网卡地址。
+	 */
+	readonly host: string;
+	/**
+	 * 登录密钥（`STELLA_TOKEN`）。undefined 表示不启登录（仅 faux 模式）；
+	 * 首次部署的自动生成不在这里做（见 auth.ts 的 resolveLoginKey），保持配置解析无副作用。
+	 */
+	readonly token: string | undefined;
 	/** 数据目录（SQLite、默认工作区、运行配置文件都在这）。 */
 	readonly dataDir: string;
 	/** SQLite 数据库路径（faux 模式下不使用）。 */
@@ -26,6 +36,8 @@ export interface StellaConfig {
 	readonly configPath: string;
 	/** 默认工作区目录（新会话工作目录的默认值）。 */
 	readonly workspaceDir: string;
+	/** 技能目录：每个子目录放一个 `SKILL.md`。 */
+	readonly skillsDir: string;
 	/** 默认模型原始写法（provider/modelId）。 */
 	readonly defaultModelSpec: string;
 	/** 模型请求的 provider attribution URL（identity）；不配用本地默认值。 */
@@ -46,6 +58,8 @@ export const DEFAULT_ENTRY_WINDOW = 200;
 
 export const DEFAULT_PORT = 7090;
 export const DEFAULT_DATA_DIR = "./data";
+/** 默认监听回环地址：暴露需要显式设置 `STELLA_HOST`（默认安全）。 */
+export const DEFAULT_HOST = "127.0.0.1";
 
 /** provider → 环境变量映射表（与 .env.example 一致）。 */
 export const PROVIDER_ENV_VARS: Readonly<Record<string, string>> = {
@@ -82,15 +96,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): StellaConfig {
 	const spec = env.STELLA_DEFAULT_MODEL?.trim() || DEFAULT_MODEL_SPEC;
 	parseModelSpec(spec); // 启动时即校验写法，给出明确中文报错
 	const port = Number.parseInt(env.STELLA_PORT?.trim() ?? "", 10);
+	const token = env.STELLA_TOKEN?.trim();
 	const fauxRate = Number.parseFloat(env.STELLA_FAUX_RATE?.trim() ?? "");
 	const rawWindow = Number.parseInt(env.STELLA_ENTRY_WINDOW?.trim() ?? "", 10);
 	return {
 		faux: isFauxMode(env),
 		port: Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT,
+		host: env.STELLA_HOST?.trim() || DEFAULT_HOST,
+		token: token !== undefined && token.length > 0 ? token : undefined,
 		dataDir,
 		sqlitePath: resolve(dataDir, "stella.sqlite"),
 		configPath: resolve(dataDir, "stella.config.json"),
 		workspaceDir: resolve(dataDir, "workspace"),
+		skillsDir: resolve(dataDir, "skills"),
 		defaultModelSpec: spec,
 		attributionUrl: env.STELLA_ATTRIBUTION_URL?.trim() || "http://localhost",
 		...(Number.isFinite(fauxRate) && fauxRate > 0 ? { fauxRate } : {}),

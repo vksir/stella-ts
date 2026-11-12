@@ -1,7 +1,8 @@
 # 服务端权威架构：@earendil-works/pi-durable + SSE + Vite
 
 > **Status: 已采纳（部分被取代）**。传输（SSE 下行 + POST 上行）、服务端权威、
-> provider 自动发现、SQLite 持久化等条款**继续有效**。
+> provider 自动发现、SQLite 持久化等条款**继续有效**（SSE 的客户端实现已改为 fetch 读流，
+> 见 [ADR-0004](0004-login-key-over-trusted-localhost.md)）。
 > **前端选型条款（Vite + vanilla TS，无 UI 框架）已被 [ADR-0003](0003-react-frontend-kernel.md)
 > 取代**：前端现为 React 18 + 每 key 订阅 + 增量 Markdown 的渲染内核；不引入组件库 /
 > Tailwind / 状态管理库这一点仍沿用本 ADR 的取舍。下文相关段落保留原貌并就地标注。
@@ -23,4 +24,4 @@ Stella 的对话能力构建在 `@earendil-works/pi-durable` 之上：Harness/Co
 ## Consequences
 
 - pi-durable 处于 experimental 阶段（API 随版本可能变化），锁定精确版本，升级时按 CHANGELOG 逐版本核对。
-- 工具（read/write/bash/edit 用自带 `CodingTools`）经 `NodeExecutionEnv` 在本机直接执行、无沙箱；单用户本机部署下接受此风险，见 GLOSSARY「工作目录」。
+- 工具（read/write/bash/edit 用自带 `CodingTools`）经 `NodeExecutionEnv` 在本机直接执行、无沙箱；单用户本机部署下接受此风险，见 GLOSSARY「工作目录」。⚠️ **「单用户本机即可信」已被 [ADR-0004](0004-login-key-over-trusted-localhost.md) 取代**：现在需要登录密钥才能使用，且默认只监听回环地址。

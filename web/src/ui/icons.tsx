@@ -46,6 +46,14 @@ export const PlusIcon = (): ReactNode => (
 	</svg>
 );
 
+export const SkillIcon = (): ReactNode => (
+	<Svg strokeWidth="1.6">
+		<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v18H6.5A2.5 2.5 0 0 1 4 18.5z" />
+		<path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20" />
+		<path d="M9 7.5h7M9 11h5" />
+	</Svg>
+);
+
 export const MenuIcon = (): ReactNode => (
 	<Svg width={18} height={18} strokeWidth="1.8">
 		<path d="M4 6h16M4 12h16M4 18h16" />
@@ -62,6 +70,14 @@ export const SunIcon = (): ReactNode => (
 export const MoonIcon = (): ReactNode => (
 	<Svg strokeWidth="1.8">
 		<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" />
+	</Svg>
+);
+
+/** 退出登录：门向右开，箭头向外。 */
+export const LogoutIcon = (): ReactNode => (
+	<Svg>
+		<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3" />
+		<path d="M10 8l-4 4 4 4M6 12h9" />
 	</Svg>
 );
 

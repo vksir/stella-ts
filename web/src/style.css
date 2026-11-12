@@ -3302,6 +3302,92 @@ summary.tool-head::-webkit-details-marker {
 	}
 }
 
+/* ---------- 指令菜单（输入 `/` 时在卡片上方弹出） ---------- */
+
+.cmd-pop {
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: calc(100% + 8px);
+	z-index: 30;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	box-sizing: border-box;
+	padding: 8px;
+	border: 1px solid var(--border-l2);
+	border-radius: var(--radius-lg);
+	background: var(--bg-layer-2, var(--bg-base));
+	box-shadow: var(--elevation-panel);
+	animation: modal-enter 140ms ease-out;
+}
+
+.cmd-head {
+	padding: 2px 6px 4px;
+	color: var(--label-caption);
+	font-size: 11px;
+	line-height: 16px;
+	letter-spacing: 0.04em;
+}
+
+.cmd-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	max-height: 252px;
+	overflow-y: auto;
+}
+
+.cmd-item {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	padding: 7px 8px;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	min-width: 0;
+}
+
+.cmd-item.is-active {
+	background: var(--interactive-hover);
+}
+
+.cmd-name {
+	flex: none;
+	max-width: 46%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-family: var(--font-code);
+	font-size: 13px;
+	line-height: 18px;
+	color: var(--label-primary);
+}
+
+.cmd-desc {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	line-height: 18px;
+	color: var(--label-tertiary);
+}
+
+.cmd-item.is-active .cmd-desc {
+	color: var(--label-secondary);
+}
+
+.cmd-foot {
+	margin-top: 2px;
+	padding: 6px 6px 0;
+	border-top: 1px solid var(--border-l1, var(--border-l2));
+	color: var(--label-caption);
+	font-size: 11px;
+	line-height: 16px;
+}
+
 /* ---------- 上下文占用 + 累计花费（DSH ContextMeter）：composer 下方 ---------- */
 
 .usage-meter {
@@ -3454,4 +3540,230 @@ summary.tool-head::-webkit-details-marker {
 	color: var(--label-caption);
 	font-size: 11px;
 	padding-top: 2px;
+}
+
+/* ---------- 登录门禁（ADR-0004）：没有用户系统，只有一枚登录密钥 ---------- */
+
+.auth-gate {
+	position: fixed;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	padding: 24px;
+	background: var(--bg-base);
+}
+
+.auth-card {
+	width: min(420px, 100%);
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 28px;
+	border: 1px solid var(--border-l2);
+	border-radius: var(--radius-lg);
+	background: var(--bg-layer-1);
+	box-shadow: 0 8px 32px var(--bg-mask-1);
+}
+
+.auth-brand {
+	font-family: var(--font-brand);
+	font-size: 13px;
+	font-weight: 500;
+	letter-spacing: 0.04em;
+	/* 装饰字也要可读：--label-caption 在深色下只有 ~4.2:1，达不到 AA */
+	color: var(--label-secondary);
+}
+
+.auth-title {
+	margin: 0;
+	font: var(--font-md-h3);
+	color: var(--label-primary);
+}
+
+.auth-hint {
+	margin: 0;
+	font: var(--font-md-base);
+	color: var(--label-secondary);
+}
+
+.auth-hint code {
+	font: var(--font-md-code);
+	background: var(--md-code-block);
+	border-radius: var(--radius-xs);
+	padding: 1px 4px;
+}
+
+.auth-input {
+	box-sizing: border-box;
+	width: 100%;
+	font: var(--font-md-base);
+	color: var(--label-primary);
+	background: var(--input-major);
+	border: 1px solid var(--border-l3);
+	border-radius: var(--radius-md);
+	padding: 10px 12px;
+}
+
+.auth-input:focus-visible {
+	outline: 2px solid var(--brand-primary);
+	outline-offset: 1px;
+}
+
+.auth-input[aria-invalid="true"] {
+	border-color: var(--state-error-primary);
+}
+
+.auth-submit {
+	font: var(--font-md-base);
+	font-weight: 500;
+	color: var(--label-primary-foreground);
+	background: var(--btn-primary-fill);
+	border: none;
+	border-radius: var(--radius-md);
+	padding: 10px 12px;
+	cursor: pointer;
+}
+
+.auth-submit:hover:not(:disabled) {
+	background: var(--btn-primary-hover);
+}
+
+.auth-submit:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.auth-message {
+	margin: 0;
+	font: var(--font-md-base);
+	color: var(--state-error-primary);
+}
+
+/* ---------- 技能管理面板 ---------- */
+
+.skills-dialog {
+	width: min(540px, 100%);
+	max-height: min(680px, calc(100vh - 48px));
+	padding-bottom: 24px;
+}
+
+.skills-body {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	min-height: 120px;
+	padding: 0 24px;
+	overflow: auto;
+}
+
+.skills-preset-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding-bottom: 10px;
+	border-bottom: var(--hairline) solid var(--border-l2);
+}
+
+.skills-preset-label {
+	font-size: 13px;
+	color: var(--label-secondary);
+}
+
+.skills-note {
+	font-size: 12px;
+	color: var(--label-tertiary);
+}
+
+.skills-empty {
+	margin: 0;
+	padding: 12px 0;
+	font-size: 13px;
+	line-height: 20px;
+	color: var(--label-tertiary);
+}
+
+.skills-empty code {
+	font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+	font-size: 12px;
+}
+
+.skills-list {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	max-height: 380px;
+	margin: 0;
+	padding: 0;
+	overflow: auto;
+	list-style: none;
+}
+
+.skill-row {
+	display: flex;
+	gap: 10px;
+	align-items: flex-start;
+	padding: 9px 10px;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+}
+
+.skill-row:hover {
+	background: var(--bg-layer-1);
+}
+
+.skill-row input {
+	margin-top: 3px;
+	accent-color: var(--brand-primary);
+}
+
+.skill-text {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.skill-name {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 14px;
+	line-height: 20px;
+	color: var(--label-primary);
+}
+
+.skill-badge {
+	padding: 0 6px;
+	border: var(--hairline) solid var(--border-l3);
+	border-radius: 999px;
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--label-tertiary);
+}
+
+.skill-desc {
+	font-size: 12px;
+	line-height: 18px;
+	color: var(--label-secondary);
+}
+
+.skills-diagnostics {
+	padding: 8px 10px;
+	border-radius: var(--radius-sm);
+	background: var(--bg-layer-1);
+	font-size: 12px;
+	line-height: 18px;
+	color: var(--label-tertiary);
+}
+
+.skills-diagnostics p {
+	margin: 0;
+	word-break: break-all;
+}
+
+.skills-error {
+	margin: 0;
+	font-size: 13px;
+	line-height: 20px;
+	color: var(--danger, #d33);
 }

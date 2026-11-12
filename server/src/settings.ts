@@ -9,9 +9,10 @@
  * 重新读取，所以热更新不需要重启 Harness；预设只在**创建会话时**解析进 `pi.agent`，
  * 因此修改预设只影响之后新建的会话（已有会话保留自己的 agent）。
  *
- * 容错：文件不存在用内置默认值；解析失败保留上一份生效配置并记录错误；不写回文件。
+ * 容错：文件不存在用内置默认值；解析失败保留上一份生效配置并记录错误。
+ * 部署字段只读；管理页可经 `updatePresetSkills` 写回 `presets[].skills`（见 ADR-0005）。
  */
-import { readFileSync, watch, type FSWatcher } from "node:fs";
+import { readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { HarnessSettings } from "@earendil-works/pi-durable";
 
@@ -22,6 +23,8 @@ export interface PresetDefinition {
 	readonly description?: string;
 	/** 扩展名；`null`/缺省 = 全部已安装扩展。 */
 	readonly extensions?: readonly string[] | null;
+	/** 技能名；`null`/缺省 = 全部已发现技能，`[]` = 全部禁用。 */
+	readonly skills?: readonly string[] | null;
 	/** 工具名；`null`/缺省 = 全部已启用工具。 */
 	readonly tools?: readonly string[] | null;
 	/** 模型可见工具名；`null`/缺省 = 默认（全部可调用工具，deferred 除外）。 */
@@ -48,6 +51,7 @@ export const STANDARD_PRESET: PresetDefinition = {
 	name: "标准",
 	description: "全部已安装能力：读写文件、执行命令、代码模式、子代理。",
 	extensions: null,
+	skills: null,
 	tools: null,
 	modelTools: null,
 	instructions: null,
@@ -92,6 +96,12 @@ function readPreset(value: unknown): PresetDefinition | undefined {
 	const id = typeof value.id === "string" ? value.id.trim() : "";
 	if (!PRESET_ID.test(id)) return undefined;
 	const extensions = readStringArray(value.extensions);
+	let skills = readStringArray(value.skills);
+	// 对能力白名单要失败关闭：写成字符串等非法值不能落到「全部技能」。
+	if (value.skills !== undefined && skills === undefined) {
+		console.warn(`[stella] 预设 "${id}" 的 skills 应为字符串数组或 null，已按空数组处理`);
+		skills = [];
+	}
 	const tools = readStringArray(value.tools);
 	const modelTools = readStringArray(value.modelTools);
 	const maxTurns = value.maxTurns === null || value.maxTurns === undefined ? null : value.maxTurns;
@@ -101,6 +111,7 @@ function readPreset(value: unknown): PresetDefinition | undefined {
 		name: typeof value.name === "string" && value.name.trim().length > 0 ? value.name.trim() : id,
 		...(typeof value.description === "string" ? { description: value.description } : {}),
 		...(extensions !== undefined ? { extensions } : {}),
+		...(skills !== undefined ? { skills } : {}),
 		...(tools !== undefined ? { tools } : {}),
 		...(modelTools !== undefined ? { modelTools } : {}),
 		...(typeof value.instructions === "string" ? { instructions: value.instructions } : {}),
@@ -182,6 +193,60 @@ export class StellaSettingsStore {
 	/** 按 id 找预设；找不到返回 undefined。 */
 	preset(id: string): PresetDefinition | undefined {
 		return this.#runtime.presets.find((preset) => preset.id === id);
+	}
+
+	/**
+	 * 把某个预设的技能白名单写回配置文件（管理页用），返回是否成功。
+	 *
+	 * 读-改-写：保留文件里其他预设与字段；写同目录临时文件再 rename，避免 fs.watch
+	 * 读到半截内容。内置预设（文件里没有）追加一条同名覆盖定义，其余能力沿用缺省。
+	 */
+	updatePresetSkills(presetId: string, skills: readonly string[] | null): boolean {
+		let raw: Record<string, unknown> = {};
+		let text: string;
+		try {
+			text = readFileSync(this.#path, "utf8");
+		} catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") {
+				console.warn(`[stella] 读取配置失败，未写入技能开关：${this.#path}`, error);
+				return false;
+			}
+			text = "{}";
+		}
+		try {
+			const parsed: unknown = JSON.parse(text);
+			if (isRecord(parsed)) raw = parsed;
+		} catch (error) {
+			console.error(`[stella] 配置文件解析失败，未写入技能开关：${this.#path}`, error);
+			return false;
+		}
+
+		const existing = this.preset(presetId);
+		const presets: unknown[] = Array.isArray(raw.presets) ? [...raw.presets] : [];
+		// 与 resolveRuntimeConfig 的 Map 一致：同 id 多条时最后一条生效，写回也要改最后一条。
+		const index = presets.findLastIndex((item) => isRecord(item) && item.id === presetId);
+		if (index >= 0) {
+			const item = presets[index];
+			if (!isRecord(item)) return false;
+			presets[index] = { ...item, skills };
+		} else {
+			if (existing === undefined) return false;
+			// 写出完整生效定义：将来内置预设新增非 null 字段时不会被静默重置。
+			presets.push({ ...existing, skills });
+		}
+
+		const next = { ...raw, presets };
+		const temporary = `${this.#path}.tmp`;
+		try {
+			writeFileSync(temporary, `${JSON.stringify(next, null, "\t")}\n`, "utf8");
+			renameSync(temporary, this.#path);
+		} catch (error) {
+			console.error(`[stella] 写入配置失败：${this.#path}`, error);
+			return false;
+		}
+		this.reload();
+		return true;
 	}
 
 	/** 启动时读一次；文件不存在时保持默认值。 */

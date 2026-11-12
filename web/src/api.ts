@@ -1,7 +1,10 @@
 /**
  * 服务端契约（SSE view / REST）：类型与 fetch 封装。
  * 从 legacy/main.ts 平移，UI 框架无关。
+ *
+ * 所有请求统一带登录票据（`Authorization: Bearer`）——见 auth.ts 与 ADR-0004。
  */
+import { authHeaders, notifyUnauthorized } from "./auth";
 
 // —— 服务端数据形状（SSE view / REST 翻页） ——
 
@@ -115,8 +118,26 @@ export interface PresetSummary {
 	builtin: boolean;
 	default: boolean;
 	extensions: string[] | null;
+	/** null = 全部已发现技能。 */
+	skills: string[] | null;
 	tools: string[] | null;
 	missing: string[];
+}
+
+/** GET /api/skills 返回的一个技能（与服务端 Skill 同形）。 */
+export interface SkillSummary {
+	name: string;
+	description: string;
+	filePath: string;
+	baseDir: string;
+	disableModelInvocation: boolean;
+}
+
+/** GET /api/skills 响应：目录、扫描结果与坏文件诊断。 */
+export interface SkillsResponse {
+	dir: string;
+	skills: SkillSummary[];
+	diagnostics: { severity: string; message: string; path: string }[];
 }
 
 export interface PresetsResponse {
@@ -177,13 +198,34 @@ export interface ConversationList {
 
 // —— fetch ——
 
+/** 注入登录票据（调用方显式给了 authorization 时不覆盖）。 */
+function withAuth(init?: RequestInit): RequestInit {
+	const headers = new Headers(init?.headers);
+	const auth = authHeaders();
+	if (auth !== undefined && !headers.has("authorization")) {
+		for (const [name, value] of Object.entries(auth)) headers.set(name, value);
+	}
+	return { ...init, headers };
+}
+
 export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-	const response = await fetch(url, init);
+	const response = await fetch(url, withAuth(init));
+	if (response.status === 401) notifyUnauthorized();
 	if (!response.ok) {
 		const body = (await response.json().catch(() => ({}))) as { error?: string };
 		throw new Error(body.error ?? `请求失败（${response.status}）：${url}`);
 	}
 	return (await response.json()) as T;
+}
+
+/** 技能目录与扫描结果（管理页用）。 */
+export function fetchSkills(): Promise<SkillsResponse> {
+	return fetchJson<SkillsResponse>("/api/skills");
+}
+
+/** 写回某个预设的技能开关：null = 全部。 */
+export function updatePresetSkills(presetId: string, skills: string[] | null): Promise<void> {
+	return putJson<{ ok: true }>(`/api/presets/${encodeURIComponent(presetId)}/skills`, { skills }).then(() => undefined);
 }
 
 export function postJson<T>(url: string, body: unknown): Promise<T> {
@@ -204,11 +246,12 @@ export function putJson<T>(url: string, body: unknown): Promise<T> {
 
 /** 非 objec 成功体（204 / {ok:true}）的宽松 POST/PUT/DELETE。 */
 export async function postOk(url: string, body?: unknown): Promise<{ ok: true; error?: undefined } | { ok: false; error: string }> {
-	const response = await fetch(url, {
+	const response = await fetch(url, withAuth({
 		method: "POST",
 		headers: body === undefined ? undefined : { "content-type": "application/json" },
 		body: body === undefined ? undefined : JSON.stringify(body),
-	});
+	}));
+	if (response.status === 401) notifyUnauthorized();
 	if (!response.ok) {
 		const payload = (await response.json().catch(() => ({}))) as { error?: string };
 		return { ok: false, error: payload.error ?? `请求失败（${response.status}）` };

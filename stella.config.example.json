@@ -1,5 +1,5 @@
 {
-	"$comment": "Stella 运行配置示例：复制为 data/stella.config.json（或 $STELLA_DATA_DIR/stella.config.json）。文件可选，热更新；不写回。.env 管密钥/端口/数据目录/默认模型。",
+	"$comment": "Stella 运行配置示例：复制为 data/stella.config.json（或 $STELLA_DATA_DIR/stella.config.json）。文件可选，热更新。.env 管密钥/端口/数据目录/默认模型。管理页的「技能」开关会写回本文件的 presets[].skills；手写改动同样生效。",
 	"defaultPreset": "standard",
 	"defaultMaxTurns": 128,
 	"settings": {
@@ -24,18 +24,20 @@
 		{
 			"id": "standard",
 			"name": "标准",
-			"description": "全部已安装能力：读写文件、执行命令、代码模式、子代理。",
+			"description": "全部已安装能力：读写文件、执行命令、代码模式、子代理、全部技能。",
 			"extensions": null,
+			"skills": null,
 			"tools": null,
 			"modelTools": null,
 			"maxTurns": 128
 		},
 		{
-			"$comment": "自定义预设示例：只读、不跑命令、只留 16 轮。创建会话时选择 /api/conversations { preset: \"readonly\" }。注意 extensions 与 tools 是两个独立轴：只写 tools 会留下扩展注入的提示词段（如 codemode 段），所以这里同时把 extensions 收窄到只剩人设，避免提示词与实际能力不一致。",
+			"$comment": "自定义预设示例：只读、不跑命令、只留 16 轮、不加载技能。创建会话时选择 /api/conversations { preset: \"readonly\" }。注意 extensions 与 tools 是两个独立轴：只写 tools 会留下扩展注入的提示词段（如 codemode 段），所以这里同时把 extensions 收窄到只剩人设，避免提示词与实际能力不一致。",
 			"id": "readonly",
 			"name": "只读",
-			"description": "只读文件，不执行命令。",
+			"description": "只读文件，不执行命令，不使用技能。",
 			"extensions": ["stella-persona"],
+			"skills": [],
 			"tools": ["read"],
 			"maxTurns": 16
 		}

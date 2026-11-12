@@ -7,18 +7,37 @@
 import { serve } from "@hono/node-server";
 import { loadConfig, loadDotEnv } from "./config.js";
 import { createApp } from "./api.js";
+import { resolveLoginKey } from "./auth.js";
 import { createStella } from "./stella.js";
 
 async function main(): Promise<void> {
 	loadDotEnv();
-	const config = loadConfig(process.env);
+	const base = loadConfig(process.env);
+	// 登录密钥：显式配置 → 直接生效；faux → 免登录；其余（首次部署）→ 生成并写入 .env。
+	const auth = base.token === undefined ? resolveLoginKey(process.env, { faux: base.faux }) : { key: base.token };
+	const config = { ...base, token: auth.key };
 	const stella = await createStella(config, process.env, {
 		...(config.fauxRate !== undefined ? { fauxTokensPerSecond: config.fauxRate } : {}),
 	});
 	const app = createApp(stella);
 
-	const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
-		console.log(`[stella] 服务已启动：http://localhost:${info.port}`);
+	const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (info) => {
+		console.log(`[stella] 服务已启动：http://${config.host === "0.0.0.0" ? "localhost" : config.host}:${info.port}`);
+		if (auth.note !== undefined) console.log(`[stella] ${auth.note}`);
+		if (config.token === undefined) {
+			console.warn("[stella] 当前未启用登录密钥：任何能访问该端口的人都能使用 Stella。");
+		} else {
+			console.log(
+				"[stella] 已启用登录密钥：首次打开页面需输入。" +
+					"轮换方式：改 .env 的 STELLA_TOKEN 后重启（所有浏览器需重新登录）。",
+			);
+		}
+		if (config.host !== "127.0.0.1" && config.host !== "localhost") {
+			console.warn(
+				`[stella] 监听 ${config.host}:${info.port} —— 局域网/公网可达；` +
+					"请确认已启用登录密钥，并让反向代理终止 TLS（Stella 自身不提供 HTTPS）。",
+			);
+		}
 		if (config.faux) {
 			console.log(
 				"[stella] STELLA_FAUX=1：faux provider + 内存存储，回答为内置示例；" +

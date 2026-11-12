@@ -8,12 +8,14 @@ import { store } from "../store/app-store";
 import { cycleTheme, loadThemePref } from "../theme";
 import {
 	FolderIcon,
+	LogoutIcon,
 	MenuIcon,
 	MoonIcon,
 	PanelCollapseIcon,
 	PanelExpandIcon,
 	PlusIcon,
 	SearchIcon,
+	SkillIcon,
 	SunIcon,
 	SystemIcon,
 	TrashIcon,
@@ -22,6 +24,8 @@ import {
 import { ComposerSeat } from "./Composer";
 import { ChatFlow, TraceView } from "./ChatFlow";
 import { ChevronDownIcon } from "./icons";
+import { LoginGate } from "./LoginGate";
+import { SkillsPanel } from "./SkillsPanel";
 import { useApp, useMedia } from "./hooks";
 
 // —— 侧栏状态（App 持有，dataset 同步给 CSS） ——
@@ -78,7 +82,13 @@ interface SidebarState {
 
 // —— 侧栏 ——
 
-const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): ReactNode {
+const Sidebar = memo(function Sidebar({
+	state,
+	onOpenSkills,
+}: {
+	state: SidebarState;
+	onOpenSkills: () => void;
+}): ReactNode {
 	const app = useApp();
 	const [themePref, setThemePref] = useState(loadThemePref);
 	const [searching, setSearching] = useState(false);
@@ -276,6 +286,28 @@ const Sidebar = memo(function Sidebar({ state }: { state: SidebarState }): React
 								{app.connected ? "已连接" : app.conversationId === undefined ? "未连接" : "重连中…"}
 							</span>
 						</span>
+						<button
+							id="skills-open"
+							className="icon-btn"
+							type="button"
+							title="技能"
+							aria-label="管理技能"
+							onClick={onOpenSkills}
+						>
+							<SkillIcon />
+						</button>
+						{app.authRequired && (
+							<button
+								id="logout"
+								className="icon-btn"
+								type="button"
+								title="退出登录"
+								aria-label="退出登录"
+								onClick={() => store.logout()}
+							>
+								<LogoutIcon />
+							</button>
+						)}
 						<button
 							id="theme-toggle"
 							className="icon-btn"
@@ -485,11 +517,23 @@ function ConversationView({ sidebar }: { sidebar: SidebarState }): ReactNode {
 
 // —— 根 ——
 
+/**
+ * 准入分支：未通过登录门禁时只渲染登录页。
+ * 外壳拆成独立组件（`Shell`），所以这里的 hooks 不受分支影响：App 永远只调一次 `useApp`。
+ */
 export function App(): ReactNode {
+	const app = useApp();
+	if (app.auth === "checking") return <div className="auth-gate" aria-busy="true" />;
+	if (app.auth !== "ready") return <LoginGate />;
+	return <Shell />;
+}
+
+function Shell(): ReactNode {
 	const app = useApp();
 	const desktop = useMedia("(min-width: 768px)");
 	const [collapsed, setCollapsed] = useState(initialCollapsed);
 	const [animating, setAnimating] = useState(false);
+	const [skillsOpen, setSkillsOpen] = useState(false);
 	const animatingTimer = useRef<number | undefined>(undefined);
 
 	const set = useCallback((next: boolean, animate: boolean) => {
@@ -544,8 +588,15 @@ export function App(): ReactNode {
 
 	return (
 		<div id="frame" className="frame" data-sidebar-collapsed={String(collapsed)} data-sidebar-drawer={desktop ? undefined : ""}>
-			<Sidebar state={sidebar} />
+			<Sidebar state={sidebar} onOpenSkills={() => setSkillsOpen(true)} />
 			<ConversationView sidebar={sidebar} />
+			{skillsOpen && (
+				<SkillsPanel
+					presets={app.presets}
+					initialPreset={app.preset ?? store.lastPreset()}
+					onClose={() => setSkillsOpen(false)}
+				/>
+			)}
 			<ConfirmDialog />
 			<Toast message={app.toast} />
 		</div>
