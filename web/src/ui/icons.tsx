@@ -1,4 +1,4 @@
-/** 共享图标（几何与线宽对齐 dsh：16/14px 槽位、1.5–1.8 线宽、round cap）。 */
+/** 共享图标（纸感工作台：16/14px 槽位、1.5–1.8 线宽、round cap）。 */
 import type { ReactNode, SVGProps } from "react";
 
 function Svg({ width = 16, height = 16, children, ...rest }: SVGProps<SVGSVGElement> & { children: ReactNode }): ReactNode {
@@ -23,6 +23,20 @@ function Svg({ width = 16, height = 16, children, ...rest }: SVGProps<SVGSVGElem
 export const StarIcon = ({ width = 18, height = 18 }: { width?: number; height?: number }): ReactNode => (
 	<svg viewBox="0 0 24 24" width={width} height={height} fill="currentColor" aria-hidden="true">
 		<path d="M12 2.6l2.5 6.6 6.9 2.8-6.9 2.8L12 21.4l-2.5-6.6-6.9-2.8 6.9-2.8z" />
+	</svg>
+);
+
+/** 会话详情栏开关（与 Aria 顶栏同形：右侧分栏的面板）。 */
+export const PanelIcon = (): ReactNode => (
+	<Svg strokeWidth="1.5">
+		<rect x="3" y="4" width="18" height="16" rx="3" />
+		<path d="M15 4v16" />
+	</Svg>
+);
+
+export const CloseIcon = ({ width = 16, height = 16 }: { width?: number; height?: number }): ReactNode => (
+	<svg viewBox="0 0 20 20" width={width} height={height} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
+		<path d="M5 5l10 10M15 5L5 15" />
 	</svg>
 );
 

@@ -47,13 +47,22 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, EntryId, ModelRef, Submission, SubmissionId, Tx } from "@earendil-works/pi-durable";
 import { AssistantEntry, ConversationBusy, ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { Hono, type Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
-import { ConversationMeta, initialConversationMeta, truncateTitle } from "./conversations.js";
+import { ConversationMeta, initialConversationMeta, touchConversation, truncateTitle } from "./conversations.js";
 import { renderSkillsCatalog, SkillSnapshot, type Skill } from "./extensions/skills/index.js";
-import { bearerToken, clientSource, createAuthGate, issueToken, loginKeyMatches, verifyToken } from "./auth.js";
+import {
+	bearerToken,
+	clientSource,
+	connectionProto,
+	createAuthGate,
+	issueToken,
+	loginKeyMatches,
+	verifyToken,
+} from "./auth.js";
 import { resolvePresetAgent, presetSummaries } from "./presets.js";
 import { buildModelCatalog } from "./providers.js";
 import type { Stella } from "./stella.js";
@@ -64,20 +73,67 @@ const WATCH_WINDOW_MAX = { max: 400 } as const;
 /** 视图窗口之外的翻页单页上限。 */
 const ENTRIES_PAGE_LIMIT = 200;
 const SSE_PING_MS = 15_000;
+/** API 请求体上限：要容纳长粘贴，但不能让未鉴权请求拿大 body 打爆内存。 */
+const API_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+/** 登录请求体上限：一枚登录密钥加 JSON 包装，4KB 足够。 */
+const LOGIN_BODY_LIMIT_BYTES = 4 * 1024;
 
 export function createApp(stella: Stella): Hono {
 	const app = new Hono();
 	const { harness } = stella;
 	/** 上下文占用缓存：键 = 最新条目 + 模型 + 工具集，流式 partial 不触发重算。 */
 	const contextCache = new Map<number, { key: string; value: ContextOccupancy }>();
+	/** 明文请求只记一次日志，避免公网扫描把日志打爆。 */
+	let warnedInsecure = false;
 
 	app.onError((error, c) => {
 		console.error("[stella] 接口错误：", error);
-		return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
+		// 生产环境只回泛化文案：error.message 可能带路径、依赖内部信息。
+		// faux 模式（测试/免 key 体验）保留细节，便于排查。
+		const message = stella.config.faux && error instanceof Error ? error.message : "服务器内部错误";
+		return c.json({ error: message }, 500);
 	});
 	app.notFound((c) => c.json({ error: "接口不存在" }, 404));
 
+	// 请求体上限先于鉴权：未登录的请求也能被打，不能等验完票据再限。
+	// 登录端点另有一层 4KB 的更严限制（见下）。
+	app.use(
+		"/api/*",
+		bodyLimit({
+			maxSize: API_BODY_LIMIT_BYTES,
+			onError: (c) => c.json({ error: `请求体过大（上限 ${API_BODY_LIMIT_BYTES / 1024 / 1024}MB）` }, 413),
+		}),
+	);
+
 	app.get("/api/health", (c) => c.json({ ok: true }));
+
+	// —— HTTPS 闸门：不只是登录 ——
+	//
+	// `STELLA_REQUIRE_HTTPS=1` 时，除探针外所有 `/api` 请求都必须来自可信反代的
+	// `X-Forwarded-Proto: https`；直连（没有可信代理头）一律拒绝。反代明确标为 `http`
+	// 时即使没开 REQUIRE_HTTPS 也拒绝，防止反代配错/降级。这样即使 5810 端口被绕过
+	// 反代直连，也无法用明文票据调用 API。
+	app.use("/api/*", async (c, next) => {
+		if (c.req.path === "/api/health") return next();
+		const proto = connectionProto(c, stella.config.trustedProxies);
+		if (proto === "http" || (stella.config.httpsRequired && proto !== "https")) {
+			if (!warnedInsecure) {
+				warnedInsecure = true;
+				console.warn(
+					"[stella] API 请求未经 HTTPS，已拒绝（检查反向代理的 X-Forwarded-Proto / TLS 配置；直连开发请关闭 STELLA_REQUIRE_HTTPS）。",
+				);
+			}
+			return c.json(
+				{
+					error:
+						"必须经 HTTPS 访问：缺少可信的 X-Forwarded-Proto: https。" +
+						"请用 https:// 访问并让反向代理覆盖该头；本地直连开发请设置 STELLA_REQUIRE_HTTPS=0。",
+				},
+				400,
+			);
+		}
+		return next();
+	});
 
 	// —— 准入：登录密钥（GLOSSARY「准入」） ——
 	//
@@ -97,25 +153,34 @@ export function createApp(stella: Stella): Hono {
 		);
 	});
 
-	app.post("/api/auth/login", async (c) => {
-		if (gate === undefined) return c.json({ authRequired: false, ok: true });
-		const source = clientSource(c);
-		const waitMs = gate.throttle.retryAfterMs(source);
-		if (waitMs > 0) {
-			const seconds = Math.ceil(waitMs / 1000);
-			return c.json({ error: `尝试过于频繁，请 ${seconds} 秒后再试` }, 429, { "retry-after": String(seconds) });
-		}
-		const body = (await c.req.json().catch(() => undefined)) as { key?: unknown } | undefined;
-		const candidate = typeof body?.key === "string" ? body.key.trim() : "";
-		if (candidate.length === 0) return c.json({ error: "请输入登录密钥" }, 400);
-		if (!loginKeyMatches(gate.key, candidate)) {
-			gate.throttle.recordFailure(source);
-			return c.json({ error: "登录密钥不正确" }, 401);
-		}
-		gate.throttle.reset(source);
-		const issued = issueToken(gate.key);
-		return c.json({ ok: true, token: issued.token, expiresAt: issued.expiresAt });
-	});
+	app.post(
+		"/api/auth/login",
+		bodyLimit({
+			maxSize: LOGIN_BODY_LIMIT_BYTES,
+			onError: (c) => c.json({ error: "登录请求体过大" }, 413),
+		}),
+		async (c) => {
+			if (gate === undefined) return c.json({ authRequired: false, ok: true });
+			const source = clientSource(c, stella.config.trustedProxies);
+			const waitMs = gate.throttle.retryAfterMs(source);
+			if (waitMs > 0) {
+				const seconds = Math.ceil(waitMs / 1000);
+				return c.json({ error: `尝试过于频繁，请 ${seconds} 秒后再试` }, 429, { "retry-after": String(seconds) });
+			}
+			const body = (await c.req.json().catch(() => undefined)) as { key?: unknown } | undefined;
+			const candidate = typeof body?.key === "string" ? body.key.trim() : "";
+			if (candidate.length === 0) return c.json({ error: "请输入登录密钥" }, 400);
+			if (!loginKeyMatches(gate.key, candidate)) {
+				const failures = gate.throttle.recordFailure(source);
+				// ADR-0004：失败日志只记来源与次数，不记用户输入。
+				console.warn(`[stella] 登录失败：来源 ${source}（本窗口第 ${failures} 次）`);
+				return c.json({ error: "登录密钥不正确" }, 401);
+			}
+			gate.throttle.reset(source);
+			const issued = issueToken(gate.key);
+			return c.json({ ok: true, token: issued.token, expiresAt: issued.expiresAt });
+		},
+	);
 
 	// 中间件必须在其余 /api/* 路由之前注册（Hono 的 use 只作用于此后的处理器）。
 	// /api/health 在中间件内部放行（探针不该要凭据）。SSE 不需要特例：
@@ -210,15 +275,23 @@ export function createApp(stella: Stella): Hono {
 		// 只列宿主会话（ownerless）；子代理创建的子会话带 owner，不进侧栏。
 		const conversations = await harness.commit(async (tx) => {
 			const page = await tx.scanConversations({}, 500);
-			const items: { id: number; title: string | null; createdAt?: number; preset: string | null }[] = [];
+			const items: {
+				id: number;
+				title: string | null;
+				createdAt?: number;
+				updatedAt?: number;
+				preset: string | null;
+			}[] = [];
 			for (const record of page.items) {
 				if (record.owner !== undefined) continue; // 子代理子会话不列
 				const meta = await tx.doc(ConversationMeta, record.id);
 				if (meta.deleted) continue; // 已删除（归档）的会话不进列表
+				const updatedAt = typeof meta.updatedAt === "number" && meta.updatedAt > 0 ? meta.updatedAt : meta.createdAt;
 				items.push({
 					id: record.id,
 					title: meta.title,
 					...(meta.createdAt > 0 ? { createdAt: meta.createdAt } : {}),
+					...(updatedAt > 0 ? { updatedAt } : {}),
 					preset: meta.preset ?? null,
 				});
 			}
@@ -408,6 +481,7 @@ export function createApp(stella: Stella): Hono {
 				const meta = await tx.doc(ConversationMeta, conversation.id);
 				// 标题取用户写的要求，不取拼接进来的技能正文（否则标题会变成 frontmatter）。
 				if (meta.title === null) meta.title = truncateTitle(request.length > 0 ? request : "技能");
+				touchConversation(meta);
 				return id;
 			}, BACKGROUND_CONTEXT);
 			// 运行在后台进行；条目（用户消息与回答）经 watch/SSE 到达前端。
@@ -484,6 +558,10 @@ export function createApp(stella: Stella): Hono {
 			from === undefined
 				? { ...WATCH_WINDOW_MAX, min: stella.config.entryWindow }
 				: { ...WATCH_WINDOW_MAX, min: stella.config.entryWindow, from: from as EntryId };
+
+		// 反向代理（nginx）默认缓冲响应，会把流式回答攒成整批；显式关掉。
+		// 反代侧仍需 `proxy_buffering off`（见 README 部署说明）。
+		c.header("X-Accel-Buffering", "no");
 
 		return streamSSE(c, async (stream) => {
 			const watch = await conversation.watch(BACKGROUND_CONTEXT, window);
@@ -575,7 +653,7 @@ export function createApp(stella: Stella): Hono {
 
 	// —— 生产模式静态资源：伺服 web/dist ——
 
-	const webDist = resolve(process.cwd(), "..", "web", "dist");
+	const webDist = stella.config.webDist;
 	if (existsSync(webDist)) {
 		const root = relative(process.cwd(), webDist).split("\\").join("/");
 		app.use("*", serveStatic({ root }));
@@ -836,7 +914,10 @@ async function settleSubmission(conversation: Conversation, submission: Submissi
 	try {
 		const settled = await submission.wait(BACKGROUND_CONTEXT);
 		if (settled.status === "done" && settled.type !== "write") {
-			await conversation.commit((tx) => tx.entry(AssistantEntry, settled.answer), BACKGROUND_CONTEXT);
+			await conversation.commit(async (tx) => {
+				await tx.entry(AssistantEntry, settled.answer);
+				touchConversation(await tx.doc(ConversationMeta, conversation.id));
+			}, BACKGROUND_CONTEXT);
 		} else if (settled.status === "unanswered") {
 			if (settled.reason === "aborted") {
 				console.info(`[stella] 提交 ${submission.id} 已被用户停止，已生成的部分已保留`);

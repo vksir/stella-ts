@@ -47,6 +47,7 @@ interface ConversationSummary {
 	readonly id: number;
 	readonly title: string | null;
 	readonly createdAt?: number;
+	readonly updatedAt?: number;
 }
 
 const ANSWER_A = "这是会话甲的回答。";
@@ -179,6 +180,8 @@ describe("会话管理：新建 / 列表 / 切换隔离 / 删除", () => {
 		expect(conversations[0]!.title).toBeNull(); // 未发消息：标题缺省
 		expect(conversations[0]!.createdAt).toBeGreaterThan(0); // 创建时间（元数据文档）
 		expect(conversations[1]!.createdAt).toBeGreaterThan(0);
+		expect(conversations[0]!.updatedAt).toBeGreaterThanOrEqual(conversations[0]!.createdAt!);
+		expect(conversations[1]!.updatedAt).toBeGreaterThanOrEqual(conversations[1]!.createdAt!);
 	});
 
 	it("标题：首条消息发出后更新为首条用户消息截断（30 字符）", async () => {
@@ -187,6 +190,7 @@ describe("会话管理：新建 / 列表 / 切换隔离 / 删除", () => {
 		const events = await readSse(await app.request(`/api/conversations/${id}/events`));
 		await waitForView(events, () => true); // 初始 view
 
+		const before = await listConversations(app);
 		const longQuestion = "这一段远远超过三十个字的消息用来验证会话标题会按首条用户消息截断生成";
 		expect(Array.from(longQuestion).length).toBeGreaterThan(30);
 		stella.faux?.setResponses([fauxAssistantMessage("好的。")]);
@@ -197,6 +201,8 @@ describe("会话管理：新建 / 列表 / 切换隔离 / 删除", () => {
 		expect(conversations).toHaveLength(1);
 		const chars = Array.from(longQuestion);
 		expect(conversations[0]!.title).toBe(`${chars.slice(0, 30).join("")}…`);
+		// 最近活动时间随提交/回答推进（旧数据缺失时列表回落 createdAt）
+		expect(conversations[0]!.updatedAt).toBeGreaterThanOrEqual(before[0]!.updatedAt ?? 0);
 	});
 
 	it("互不串扰：两个会话各自发消息，各自历史只含自己的内容；删除其一后列表只剩另一个", async () => {

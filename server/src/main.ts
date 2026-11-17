@@ -5,9 +5,9 @@
  * 生产：仓库根 `npm run build` 后 `npm start`（node dist/main.js，同时伺服 web/dist）。
  */
 import { serve } from "@hono/node-server";
-import { loadConfig, loadDotEnv } from "./config.js";
+import { isLoopbackHost, loadConfig, loadDotEnv } from "./config.js";
 import { createApp } from "./api.js";
-import { resolveLoginKey } from "./auth.js";
+import { assertDeploymentSafety, resolveLoginKey } from "./auth.js";
 import { createStella } from "./stella.js";
 
 async function main(): Promise<void> {
@@ -16,6 +16,9 @@ async function main(): Promise<void> {
 	// 登录密钥：显式配置 → 直接生效；faux → 免登录；其余（首次部署）→ 生成并写入 .env。
 	const auth = base.token === undefined ? resolveLoginKey(process.env, { faux: base.faux }) : { key: base.token };
 	const config = { ...base, token: auth.key };
+	// 非回环 + 无密钥 / 弱密钥 / 未显式配置 HTTPS 时，直接在启动阶段失败，
+	// 不把“无鉴权”或“明文”的入口暴露到网络上。
+	assertDeploymentSafety(config);
 	const stella = await createStella(config, process.env, {
 		...(config.fauxRate !== undefined ? { fauxTokensPerSecond: config.fauxRate } : {}),
 	});
@@ -32,11 +35,29 @@ async function main(): Promise<void> {
 					"轮换方式：改 .env 的 STELLA_TOKEN 后重启（所有浏览器需重新登录）。",
 			);
 		}
-		if (config.host !== "127.0.0.1" && config.host !== "localhost") {
+		if (!isLoopbackHost(config.host)) {
 			console.warn(
 				`[stella] 监听 ${config.host}:${info.port} —— 局域网/公网可达；` +
 					"请确认已启用登录密钥，并让反向代理终止 TLS（Stella 自身不提供 HTTPS）。",
 			);
+			if (config.httpsRequired) {
+				console.log(
+					"[stella] 已开启 HTTPS 强制：除 /api/health 外的所有 /api 请求都要求" +
+						"可信 X-Forwarded-Proto: https。",
+				);
+			} else if (config.httpsConfigured) {
+				console.warn(
+					"[stella] 已显式关闭 HTTPS 强制（STELLA_REQUIRE_HTTPS=0）：" +
+						"非回环监听上的登录密钥与 30 天票据可能明文过网。",
+				);
+			}
+			if (config.trustedProxies.every((entry) => entry === "127.0.0.1" || entry === "::1")) {
+				console.warn(
+					"[stella] STELLA_TRUSTED_PROXY 仍是默认回环：若反向代理不在本机" +
+						"（Docker 网桥/另一台机器），真实来源与 X-Forwarded-Proto 都不会生效；" +
+						"请把反代地址或网段加进该变量。",
+				);
+			}
 		}
 		if (config.faux) {
 			console.log(

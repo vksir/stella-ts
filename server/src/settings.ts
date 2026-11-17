@@ -15,6 +15,7 @@
 import { readFileSync, renameSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname } from "node:path";
 import type { HarnessSettings } from "@earendil-works/pi-durable";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 /** 一个会话预设：创建会话时选择的一套能力与人设，按名字引用已安装的扩展/工具。 */
 export interface PresetDefinition {
@@ -33,9 +34,17 @@ export interface PresetDefinition {
 	readonly instructions?: string | null;
 	/** 单次运行的工具有限轮次；缺省用 defaultMaxTurns。 */
 	readonly maxTurns?: number | null;
+	/**
+	 * 该预设创建的会话的模型思考等级（`thinkingLevel`）。缺省 = 不指定，pi-durable
+	 * 按 `"off"` 处理（不向 provider 请求 reasoning）；`"off"` = 显式关闭。
+	 */
+	readonly thinkingLevel?: ModelThinkingLevel;
 	/** 内置预设（目前只有 standard）。 */
 	readonly builtin?: boolean;
 }
+
+/** `thinkingLevel` 的合法值，与 pi-ai `ModelThinkingLevel` 一致。 */
+const THINKING_LEVELS: readonly ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** 配置文件解析后的生效值。 */
 export interface StellaRuntimeConfig {
@@ -56,6 +65,7 @@ export const STANDARD_PRESET: PresetDefinition = {
 	modelTools: null,
 	instructions: null,
 	maxTurns: null,
+	thinkingLevel: "medium",
 	builtin: true,
 };
 
@@ -106,6 +116,17 @@ function readPreset(value: unknown): PresetDefinition | undefined {
 	const modelTools = readStringArray(value.modelTools);
 	const maxTurns = value.maxTurns === null || value.maxTurns === undefined ? null : value.maxTurns;
 	if (maxTurns !== null && !isPositiveInteger(maxTurns)) return undefined;
+	// 思考等级非法时只忽略该字段，不整体丢弃预设（与 skills 的容错风格一致）。
+	let thinkingLevel: ModelThinkingLevel | undefined;
+	if (value.thinkingLevel !== undefined) {
+		if (THINKING_LEVELS.includes(value.thinkingLevel as ModelThinkingLevel)) {
+			thinkingLevel = value.thinkingLevel as ModelThinkingLevel;
+		} else {
+			console.warn(
+				`[stella] 预设 "${id}" 的 thinkingLevel 应为 ${THINKING_LEVELS.join(" / ")} 之一，已忽略该字段`,
+			);
+		}
+	}
 	return {
 		id,
 		name: typeof value.name === "string" && value.name.trim().length > 0 ? value.name.trim() : id,
@@ -116,6 +137,7 @@ function readPreset(value: unknown): PresetDefinition | undefined {
 		...(modelTools !== undefined ? { modelTools } : {}),
 		...(typeof value.instructions === "string" ? { instructions: value.instructions } : {}),
 		...(maxTurns !== null ? { maxTurns } : {}),
+		...(thinkingLevel === undefined ? {} : { thinkingLevel }),
 		builtin: id === STANDARD_PRESET.id,
 	};
 }

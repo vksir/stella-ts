@@ -42,6 +42,25 @@ export interface StellaConfig {
 	readonly defaultModelSpec: string;
 	/** 模型请求的 provider attribution URL（identity）；不配用本地默认值。 */
 	readonly attributionUrl: string;
+	/**
+	 * 可信反向代理（`STELLA_TRUSTED_PROXY`，逗号分隔的 IP 或 IPv4 CIDR）。
+	 * 只有直连方在此名单内，才信任 `X-Forwarded-For` / `X-Forwarded-Proto`。
+	 * 默认 `127.0.0.1,::1`：反代与 Stella 同机、Stella 只绑回环时成立；
+	 * Docker 网桥或另一台机器上的反代必须把它的地址加进来，否则所有客户端共用
+	 * 一个来源（登录限速退化成全局桶）且拿不到真实协议。
+	 */
+	readonly trustedProxies: readonly string[];
+	/**
+	 * 强制经 HTTPS（`STELLA_REQUIRE_HTTPS=1`）。开启后，除 `/api/health` 外所有 `/api` 请求
+	 * 都要求可信 `X-Forwarded-Proto: https`；关闭时仍会拒绝明确标为 `http` 的请求。
+	 * 非回环监听且未显式设置该项时，启动会被拒绝（见 auth.ts 的 `assertDeploymentSafety`）；
+	 * 显式 `0`/`false` 才允许明文（局域网自担风险）。
+	 */
+	readonly httpsRequired: boolean;
+	/** 是否显式设置过 `STELLA_REQUIRE_HTTPS`（`1`/`true` 或 `0`/`false`）。 */
+	readonly httpsConfigured: boolean;
+	/** 前端构建产物目录（`STELLA_WEB_DIST`，默认 `../web/dist`，相对进程 cwd）。 */
+	readonly webDist: string;
 	/** faux 模式的流式速率（tokens/s），用于演示/测试排队与停止；不配则瞬时完成。 */
 	readonly fauxRate?: number;
 	/**
@@ -56,10 +75,14 @@ export const DEFAULT_MODEL_SPEC = "deepseek/deepseek-chat";
 /** 观察窗口默认条目数（SSE view 携带的最近条目数）。 */
 export const DEFAULT_ENTRY_WINDOW = 200;
 
-export const DEFAULT_PORT = 7090;
+export const DEFAULT_PORT = 5810;
 export const DEFAULT_DATA_DIR = "./data";
 /** 默认监听回环地址：暴露需要显式设置 `STELLA_HOST`（默认安全）。 */
 export const DEFAULT_HOST = "127.0.0.1";
+/** 默认可信代理：只有本机反代成立；Docker/跨机部署需显式加地址。 */
+export const DEFAULT_TRUSTED_PROXIES = ["127.0.0.1", "::1"] as const;
+/** 前端构建产物默认位置（相对进程 cwd；`npm start` 的 cwd 是 server/）。 */
+export const DEFAULT_WEB_DIST = "../web/dist";
 
 /** provider → 环境变量映射表（与 .env.example 一致）。 */
 export const PROVIDER_ENV_VARS: Readonly<Record<string, string>> = {
@@ -91,14 +114,35 @@ export function parseModelSpec(spec: string): { provider: string; modelId: strin
 	return { provider, modelId };
 }
 
+/** 是否是回环监听地址（127/8、localhost、::1；也认 IPv4-mapped IPv6）。 */
+export function isLoopbackHost(host: string): boolean {
+	const value = host.trim().toLowerCase();
+	if (value === "localhost" || value === "::1" || value === "[::1]" || value === "0:0:0:0:0:0:0:1") {
+		return true;
+	}
+	const ipv4 = value.startsWith("::ffff:") ? value.slice("::ffff:".length) : value;
+	const match = /^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ipv4);
+	return match !== null && [match[1], match[2], match[3]].every((part) => Number(part) <= 255);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): StellaConfig {
 	const dataDir = resolve(env.STELLA_DATA_DIR?.trim() || DEFAULT_DATA_DIR);
 	const spec = env.STELLA_DEFAULT_MODEL?.trim() || DEFAULT_MODEL_SPEC;
 	parseModelSpec(spec); // 启动时即校验写法，给出明确中文报错
 	const port = Number.parseInt(env.STELLA_PORT?.trim() ?? "", 10);
 	const token = env.STELLA_TOKEN?.trim();
+	const httpsRaw = env.STELLA_REQUIRE_HTTPS?.trim().toLowerCase();
+	// 只把 1/0/true/false 当作显式配置；写成 on/yes 等未知值按“未配置”处理，
+	// 这样非回环 + 未知值时会被启动断言拒绝，而不是静默按关闭放行。
+	const httpsConfigured =
+		httpsRaw === "1" || httpsRaw === "0" || httpsRaw === "true" || httpsRaw === "false";
+	const httpsRequired = httpsRaw === "1" || httpsRaw === "true";
 	const fauxRate = Number.parseFloat(env.STELLA_FAUX_RATE?.trim() ?? "");
 	const rawWindow = Number.parseInt(env.STELLA_ENTRY_WINDOW?.trim() ?? "", 10);
+	const trustedProxies = (env.STELLA_TRUSTED_PROXY ?? "")
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
 	return {
 		faux: isFauxMode(env),
 		port: Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT,
@@ -111,6 +155,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): StellaConfig {
 		skillsDir: resolve(dataDir, "skills"),
 		defaultModelSpec: spec,
 		attributionUrl: env.STELLA_ATTRIBUTION_URL?.trim() || "http://localhost",
+		trustedProxies: trustedProxies.length > 0 ? trustedProxies : DEFAULT_TRUSTED_PROXIES,
+		httpsRequired,
+		httpsConfigured,
+		webDist: resolve(env.STELLA_WEB_DIST?.trim() || DEFAULT_WEB_DIST),
 		...(Number.isFinite(fauxRate) && fauxRate > 0 ? { fauxRate } : {}),
 		entryWindow: Number.isInteger(rawWindow) ? Math.min(400, Math.max(4, rawWindow)) : DEFAULT_ENTRY_WINDOW,
 	};

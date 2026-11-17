@@ -29,7 +29,7 @@ function applyTheme(pref: ThemePref): void {
 	document.documentElement.style.colorScheme = resolved;
 	document
 		.querySelector('meta[name="theme-color"]')
-		?.setAttribute("content", resolved === "dark" ? "#151517" : "#ffffff");
+		?.setAttribute("content", resolved === "dark" ? "#1c1a17" : "#fbfaf7");
 }
 
 /** 循环切换：浅色 → 深色 → 跟随系统 → 浅色；持久化并立即生效。 */

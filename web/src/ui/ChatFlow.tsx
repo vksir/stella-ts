@@ -2,6 +2,9 @@
  * 消息流：keys 列表 + 每 key 一个 Seat（只订阅自己的 NodeSource）。
  * 流式期间只有 streaming 节点重渲；历史节点 DOM 纹丝不动。
  * Seat 外层 key 带会话 id 前缀：切换会话强制 remount（内容不同源）。
+ *
+ * 外观采用 Aria 的消息语言：助手带头像与衬线名字，用户是暖沙气泡；
+ * 「状态行」的折叠语义保留（GLOSSARY），只是换成了消息头上的状态与箭头。
  */
 
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
@@ -12,22 +15,22 @@ import { MarkdownBlocks } from "../markdown/view";
 import {
 	CheckCircleIcon,
 	ChevronDownIcon,
-	InfoIcon,
 	ChevronRightIcon,
 	CheckIcon,
 	CopyIcon,
+	InfoIcon,
 	MinusCircleIcon,
 	PendingIcon,
 	QuoteIcon,
 	SpinnerIcon,
-	StarIcon,
 	XCircleIcon,
 } from "./icons";
+import { initialOf, presetOf, tintFor } from "./preset";
 
-function Seat({ nodeKey, conversationId }: { nodeKey: string; conversationId: number }): ReactNode {
+function Seat({ nodeKey }: { nodeKey: string }): ReactNode {
 	const node = useNode(nodeKey);
 	if (node === null) return null;
-	return <NodeView node={node} conversationId={conversationId} />;
+	return <NodeView node={node} />;
 }
 
 const SeatMemo = memo(Seat);
@@ -35,24 +38,28 @@ const SeatMemo = memo(Seat);
 export function ChatFlow({ columnRef }: { columnRef: React.RefObject<HTMLDivElement> }): ReactNode {
 	const keys = useFlowKeys();
 	const conversationId = useApp().conversationId ?? 0;
+	// 有流式节点时不再画单独的「正在思考」行：流式消息头自己带计时，
+	// 否则会出现「正在回答」和「正在思考」两条并行状态。
+	const hasStreaming = keys.includes("streaming");
 	return (
 		<div className="column" ref={columnRef}>
-			{keys.map((key) => (
-				<SeatMemo key={`${conversationId}:${key}`} nodeKey={key} conversationId={conversationId} />
-			))}
+			{keys.map((key) =>
+				hasStreaming && key === "running" ? null : <SeatMemo key={`${conversationId}:${key}`} nodeKey={key} />,
+			)}
 		</div>
 	);
 }
 
-// —— 轨迹视图（头部「轨迹」Tab）：全部工具调用按时间线展开 ——
+// —— 轨迹视图（详情栏「查看全部」弹层）：全部工具调用按时间线展开 ——
 
 export function TraceView(): ReactNode {
 	const keys = useFlowKeys();
-	const cards = useMemo(() => store.getTraceCards(), [keys]);
+	const docsVersion = useSyncExternalStore(store.subscribeDocs, store.getDocsVersion);
+	const cards = useMemo(() => store.getTraceCards(), [keys, docsVersion]);
 	if (cards.length === 0) {
 		return (
 			<div className="column">
-				<div className="flow-item flow-placeholder">（本会话还没有工具调用）</div>
+				<div className="flow-placeholder">（本会话还没有工具调用）</div>
 			</div>
 		);
 	}
@@ -69,7 +76,7 @@ export function TraceView(): ReactNode {
 
 // —— 节点视图 ——
 
-function NodeView({ node, conversationId }: { node: FlowNode; conversationId: number }): ReactNode {
+function NodeView({ node }: { node: FlowNode }): ReactNode {
 	switch (node.type) {
 		case "user":
 			return <UserNode text={node.text} reveal={node.reveal} timestamp={node.timestamp} />;
@@ -77,6 +84,7 @@ function NodeView({ node, conversationId }: { node: FlowNode; conversationId: nu
 			return (
 				<AssistantNode
 					text={node.text}
+					thinking={node.thinking}
 					calls={node.calls}
 					reveal={node.reveal}
 					durationMs={node.durationMs}
@@ -90,16 +98,16 @@ function NodeView({ node, conversationId }: { node: FlowNode; conversationId: nu
 				<div className="flow-item turn-error">
 					<span className="error-dot" />
 					<div className="turn-error-copy">
-						<span className="turn-error-title">{node.type === "assistant-error" ? "本次回答失败" : ""}</span>
+						<span className="turn-error-title">本次回答失败</span>
 						<span className="turn-error-message">{node.message}</span>
 					</div>
 				</div>
 			);
 		case "streaming":
-			return <StreamingNode text={node.text} />;
+			return <StreamingNode text={node.text} thinking={node.thinking} />;
 		case "tool":
 			return (
-				<div className="flow-item">
+				<div className="flow-item tool-only">
 					<ToolRow card={node.card} />
 				</div>
 			);
@@ -136,10 +144,9 @@ function NodeView({ node, conversationId }: { node: FlowNode; conversationId: nu
 function formatStamp(ts?: number): string {
 	if (ts === undefined || ts <= 0) return "";
 	const d = new Date(ts);
-	const pad = (n: number): string => String(n).padStart(2, "0");
 	const now = new Date();
 	const sameDay = d.toDateString() === now.toDateString();
-	const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 	return sameDay ? hm : `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
 
@@ -150,23 +157,60 @@ function formatTokenCount(value: number): string {
 	return `${(value / 1_000_000).toFixed(2)}M`;
 }
 
-// —— 用户消息：右对齐浅蓝气泡 + 操作行 ——
+function useAgentIdentity(): { name: string; tint: ReturnType<typeof tintFor> } {
+	const app = useApp();
+	const current = app.conversations.find((conversation) => conversation.id === app.conversationId);
+	const preset = presetOf(app, current?.preset ?? app.preset);
+	return { name: preset?.name ?? "Stella", tint: tintFor(preset?.id) };
+}
+
+// —— 用户消息：右对齐暖沙气泡 + 操作行 ——
 
 function UserNode({ text, reveal, timestamp }: { text: string; reveal: boolean; timestamp?: number }): ReactNode {
 	return (
-		<div className="flow-item msg-user" data-reveal={reveal ? undefined : "hover"}>
-			<div className="bubble-stack">
-				<div className="bubble">{text}</div>
-			</div>
+		<div className="flow-item msg user" data-reveal={reveal ? undefined : "hover"}>
+			<div className="bubble">{text}</div>
 			<MessageActions text={text} timestamp={timestamp} />
 		</div>
 	);
 }
 
-// —— 助手消息：无气泡全宽 markdown + 工具折叠行 + 操作行 ——
+// —— 思考块：折叠的模型思考内容（流式中自动展开） ——
+
+/**
+ * 思考区（details/summary）。类名是 style.css 的契约，不能改名。
+ * 已完成的回答默认折叠；流式中展开并显示「思考中」。
+ */
+export function ThinkingBlock({ thinking, streaming = false }: { thinking: string | undefined; streaming?: boolean }): ReactNode {
+	const bodyRef = useRef<HTMLDivElement>(null);
+	// 流式思考持续变长：跟到底部，别让新内容落在折叠区外（body 有 max-height 滚动）。
+	useEffect(() => {
+		if (!streaming) return;
+		const body = bodyRef.current;
+		if (body !== null) body.scrollTop = body.scrollHeight;
+	}, [thinking, streaming]);
+	if (thinking === undefined || thinking.length === 0) return null;
+	return (
+		<details className="thinking" open={streaming ? true : undefined}>
+			<summary className="thinking-head">
+				<span className="thinking-label">思考</span>
+				<span className="thinking-status">{streaming ? "思考中" : `${thinking.length} 字`}</span>
+				<span className="thinking-chev">
+					<ChevronRightIcon width={12} height={12} />
+				</span>
+			</summary>
+			<div className="thinking-body" ref={bodyRef}>
+				{thinking}
+			</div>
+		</details>
+	);
+}
+
+// —— 助手消息：头像 + 衬线名字 + 折叠状态 + 思考/markdown/工具 + 操作行 ——
 
 function AssistantNode({
 	text,
+	thinking,
 	calls,
 	reveal,
 	durationMs,
@@ -175,6 +219,7 @@ function AssistantNode({
 	aborted,
 }: {
 	text: string;
+	thinking?: string;
 	calls: ToolCard[];
 	reveal: boolean;
 	durationMs?: number;
@@ -186,53 +231,106 @@ function AssistantNode({
 	if (parser.current === null) parser.current = new IncrementalMarkdown();
 	const blocks = useMemo(() => parser.current?.settle(text) ?? { blocks: [], frozenEnd: 0 }, [text]);
 	const [collapsed, setCollapsed] = useState(false);
-	// 被中断的回答（服务崩溃 / 停止后留下的部分内容）不能声称"已完成"
+	const { name, tint } = useAgentIdentity();
 	const statusText = aborted
 		? "已中断"
 		: durationMs === undefined
 			? "已完成"
-			: `已完成，用时 ${Math.max(1, Math.round(durationMs / 1000))} 秒`;
-	return (
-		<div className="flow-item msg-stella" data-part="response" data-reveal={reveal ? undefined : "hover"}>
-			<button
-				type="button"
-				className="turn-status"
-				aria-expanded={!collapsed}
-				title={collapsed ? "展开回答" : "收起回答"}
-				onClick={() => setCollapsed(!collapsed)}
-			>
-				<span>{statusText}</span>
-				<ChevronDownIcon width={14} height={14} />
-			</button>
-			<div className="turn-divider" />
-			{!collapsed && (
-				<div className="turn-body">
-					{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} />}
+			: `已完成 · ${Math.max(1, Math.round(durationMs / 1000))} 秒`;
+
+	// 只有工具调用、没有正文的 assistant 条目：不重复一条「回答」头，直接贴工具卡。
+	// 工具卡自己有状态与折叠；下一条正文回答再出状态行。
+	if (text.length === 0 && calls.length > 0) {
+		return (
+			<div className="flow-item tool-only" data-part="response">
+				<ThinkingBlock thinking={thinking} />
+				<div className="tool-stack">
 					{calls.map((card, index) => (
 						<ToolRow key={`${card.name}:${index}`} card={card} />
 					))}
-					{text.length === 0 && calls.length === 0 && <span className="flow-placeholder">（无文本内容）</span>}
 				</div>
-			)}
-			<MessageActions text={text} timestamp={timestamp} tokens={tokens} />
+			</div>
+		);
+	}
+
+	return (
+		<div className="flow-item msg agent" data-part="response" data-reveal={reveal ? undefined : "hover"}>
+			<div className={`avatar tint-${tint}`} aria-hidden="true">
+				{initialOf(name)}
+			</div>
+			<div className="msg-main">
+				<div className="msg-head">
+					<button
+						type="button"
+						className="msg-id"
+						aria-expanded={!collapsed}
+						title={collapsed ? "展开回答" : "收起回答"}
+						onClick={() => setCollapsed(!collapsed)}
+					>
+						<span className="msg-name">{name}</span>
+						<span className="msg-role">回答</span>
+						<span className={`msg-status${aborted ? " is-aborted" : ""}`}>{statusText}</span>
+						<span className="msg-chev">
+							<ChevronDownIcon width={12} height={12} />
+						</span>
+					</button>
+					<span className="msg-time">{formatStamp(timestamp)}</span>
+				</div>
+				{!collapsed && (
+					<div className="msg-body">
+						<ThinkingBlock thinking={thinking} />
+						{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} />}
+						{calls.length > 0 && (
+							<div className="tool-stack">
+								{calls.map((card, index) => (
+									<ToolRow key={`${card.name}:${index}`} card={card} />
+								))}
+							</div>
+						)}
+						{text.length === 0 && calls.length === 0 && <span className="flow-placeholder">（无文本内容）</span>}
+					</div>
+				)}
+				<MessageActions text={text} tokens={tokens} />
+			</div>
 		</div>
 	);
 }
 
 // —— 流式节点：增量 append（冻结块缓存 + rAF 上游已合帧） ——
 
-function StreamingNode({ text }: { text: string }): ReactNode {
+function StreamingNode({ text, thinking }: { text: string; thinking?: string }): ReactNode {
 	const parser = useRef<IncrementalMarkdown | null>(null);
 	if (parser.current === null) parser.current = new IncrementalMarkdown();
 	const blocks = useMemo(() => parser.current?.append(text) ?? { blocks: [], frozenEnd: 0 }, [text]);
+	const { name, tint } = useAgentIdentity();
+	const elapsed = useElapsedSeconds();
+	// 只有思考、还没出正文时，状态行说「正在思考」而不是「正在回答」。
+	const statusBase = text.length > 0 ? "正在回答" : "正在思考";
 	return (
-		<div className="flow-item msg-stella" data-part="response">
-			{text.length > 0 && <MarkdownBlocks blocks={blocks.blocks} streaming />}
+		<div className="flow-item msg agent" data-part="response">
+			<div className={`avatar tint-${tint}`} aria-hidden="true">
+				{initialOf(name)}
+			</div>
+			<div className="msg-main">
+				<div className="msg-head">
+					<span className="msg-id static">
+						<span className="msg-name">{name}</span>
+						<span className="msg-role">回答</span>
+						<span className="msg-status live">
+							{elapsed === undefined ? statusBase : `${statusBase} · ${elapsed} 秒`}
+						</span>
+					</span>
+				</div>
+				<div className="msg-body">
+					<ThinkingBlock thinking={thinking} streaming />
+					{text.length > 0 ? <MarkdownBlocks blocks={blocks.blocks} streaming /> : <span className="flow-placeholder">正在组织语言…</span>}
+				</div>
+			</div>
 		</div>
 	);
 }
 
-// —— 操作行（复制） ——
+// —— 操作行（引用 / 复制） ——
 
 function MessageActions({
 	text,
@@ -251,7 +349,7 @@ function MessageActions({
 			{stamp.length > 0 && <span className="msg-stamp">{stamp}</span>}
 			{tokens !== undefined && tokens > 0 && (
 				<span className="msg-tokens" title="本条回答的 token 用量">
-					{`用量 ${formatTokenCount(tokens)} tok`}
+					{`${formatTokenCount(tokens)} tok`}
 				</span>
 			)}
 			<button
@@ -262,6 +360,7 @@ function MessageActions({
 				onClick={() => store.quoteToInput(text)}
 			>
 				<QuoteIcon />
+				<span>引用</span>
 			</button>
 			<button
 				type="button"
@@ -280,48 +379,45 @@ function MessageActions({
 				}}
 			>
 				{copied ? <CheckIcon /> : <CopyIcon />}
+				<span>{copied ? "已复制" : "复制"}</span>
 			</button>
 		</div>
 	);
 }
 
-// —— 运行状态行（DSH .running：0.5px 分隔线 + 星标 + shimmer 文字） ——
+// —— 运行状态行：带实时耗时 ——
 
-/**
- * 运行状态行：带实时耗时（对齐 dsh 的「深度求索中，用时 N 秒…」）。
- *
- * 计时用组件本地 state 每秒推进，**不写进 store**：store 的通知会连带重渲侧栏与
- * composer，而这里只需要重渲这一行。运行结束（busy=false）时本行会被移除，
- * 最终耗时由落定条目的状态行负责显示。
- */
-function RunningRow(): ReactNode {
+function useElapsedSeconds(): number | undefined {
 	const startedAt = store.getRunStartedAt();
 	const [now, setNow] = useState(() => Date.now());
-
 	useEffect(() => {
 		if (startedAt === undefined) return;
 		const timer = window.setInterval(() => setNow(Date.now()), 1000);
 		return () => window.clearInterval(timer);
 	}, [startedAt]);
+	return startedAt === undefined ? undefined : Math.max(1, Math.round((now - startedAt) / 1000));
+}
 
-	const elapsed = startedAt === undefined ? undefined : Math.max(1, Math.round((now - startedAt) / 1000));
+function RunningRow(): ReactNode {
+	const elapsed = useElapsedSeconds();
+	const { name, tint } = useAgentIdentity();
 	return (
 		<div className="running">
-			<span className="running-divider" />
+			<div className={`avatar tint-${tint}`} aria-hidden="true">
+				{initialOf(name)}
+			</div>
 			<span className="running-content">
-				<span className="running-icon">
-					<StarIcon width={14} height={14} />
-				</span>
 				<span className="running-text">
-					{elapsed === undefined ? "Stella 正在运行…" : `Stella 正在运行… 用时 ${elapsed} 秒`}
+					{name} 正在思考
+					{elapsed === undefined ? "…" : `，用时 ${elapsed} 秒…`}
 				</span>
+				<span className="running-bar" aria-hidden="true" />
 			</span>
 		</div>
 	);
 }
 
 // —— 非对话条目的通知行（压缩 / 重置 / 自定义类型）——
-// 用中性样式而不是错误卡片：压缩成功不该显示成因失败。
 
 function NoticeRow({ label, detail }: { label: string; detail?: string }): ReactNode {
 	if (detail === undefined) {
@@ -371,50 +467,48 @@ function ErrorCard({ reason, detail }: { reason: string; detail: string | undefi
 	);
 }
 
-// —— 工具折叠行（DSH ToolRow：16 图标槽 + 13px 标题 + 点分隔 + 摘要） ——
+// —— 工具卡（Aria .tool：圆形状态图标 + 名字 + 摘要 + 展开详情） ——
 
 export function ToolRow({ card }: { card: ToolCard }): ReactNode {
-	const summaryClass = `tool-summary${card.isError ? " error" : ""}`;
-	const stateSuffix =
+	const statusText =
 		card.status === "running"
-			? " · 运行中"
+			? "运行中"
 			: card.status === "pending"
-				? " · 排队中"
+				? "排队中"
 				: card.status === "done" && card.isError
-					? " · 失败"
-					: "";
+					? "失败"
+					: card.status === "lost"
+						? "未完成"
+						: "";
 	return (
-		<details className="tool-row">
+		<details className="tool">
 			<summary className="tool-head">
-				<span className="tool-leading">
+				<span className="tool-ico">
 					<ToolStatusIcon card={card} />
-					<span className="tool-disclosure">
-						<ChevronRightIcon />
-					</span>
 				</span>
-				<span className="tool-title">{card.name}</span>
-				<span className="tool-sep" />
-				<span className={summaryClass} data-streaming={card.status === "running" || card.status === "pending" ? "" : undefined}>
+				<span className="tool-label">{card.name}</span>
+				<span className="tool-detail" data-streaming={card.status === "running" || card.status === "pending" ? "" : undefined}>
 					{card.summary}
-					{stateSuffix}
+				</span>
+				{statusText.length > 0 && <span className={`tool-status${card.isError ? " is-error" : ""}`}>{statusText}</span>}
+				<span className="tool-disclosure">
+					<ChevronRightIcon width={12} height={12} />
 				</span>
 			</summary>
-			<div className="tool-body-wrap">
-				<div className="tool-body">
-					<div className="tool-section">参数</div>
-					<pre>{card.argsText || "（无）"}</pre>
-					{card.output !== undefined && card.output.length > 0 ? (
-						<>
-							<div className="tool-section">{card.isError ? "错误输出" : "输出"}</div>
-							<pre className={card.isError ? "is-error" : undefined}>{card.output}</pre>
-						</>
-					) : card.status === "running" || card.status === "pending" ? (
-						<>
-							<div className="tool-section">输出</div>
-							<pre>（等待输出…）</pre>
-						</>
-					) : null}
-				</div>
+			<div className="tool-body">
+				<div className="tool-section">参数</div>
+				<pre>{card.argsText || "（无）"}</pre>
+				{card.output !== undefined && card.output.length > 0 ? (
+					<>
+						<div className="tool-section">{card.isError ? "错误输出" : "输出"}</div>
+						<pre className={card.isError ? "is-error" : undefined}>{card.output}</pre>
+					</>
+				) : card.status === "running" || card.status === "pending" ? (
+					<>
+						<div className="tool-section">输出</div>
+						<pre>（等待输出…）</pre>
+					</>
+				) : null}
 			</div>
 		</details>
 	);

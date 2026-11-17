@@ -1,5 +1,5 @@
 /**
- * 会话元数据：标题与创建时间。
+ * 会话元数据：标题、创建时间与最近活动时间。
  *
  * pi-durable 的 `ConversationRecord` 只有 id 与归属关系，不含标题、创建时间，也没有删除会话的
  * API（Harness/Conversation/Tx/Storage 各层都没有）。因此元数据按 README「Your Own State」
@@ -18,6 +18,8 @@ const TITLE_MAX_LENGTH = 30;
 export interface ConversationMeta {
 	/** 创建时间（epoch 毫秒）。旧数据（票 01 时代）缺失时为 0，列表按缺失处理。 */
 	createdAt: number;
+	/** 最近活动时间（epoch 毫秒）：提交消息、回答落定时更新；旧数据缺失时回落 createdAt。 */
+	updatedAt: number;
 	/** 会话标题；首条用户消息发出前为 null，前端显示占位名。 */
 	title: string | null;
 	/** 归档（删除）标记：置真后从列表隐藏。数据不物理删除。 */
@@ -34,13 +36,19 @@ export const ConversationMeta = defineDoc<ConversationMeta>({
 	scope: "conversation",
 	history: "latest",
 	fork: "initial",
-	initial: () => ({ createdAt: 0, title: null, deleted: false, preset: null }),
+	initial: () => ({ createdAt: 0, updatedAt: 0, title: null, deleted: false, preset: null }),
 	checkpointWhen: () => true,
 });
 
 /** 新会话元数据的初值（创建会话的同一 commit 写入）。 */
 export function initialConversationMeta(): ConversationMeta {
-	return { createdAt: Date.now(), title: null, deleted: false, preset: null };
+	const now = Date.now();
+	return { createdAt: now, updatedAt: now, title: null, deleted: false, preset: null };
+}
+
+/** 把会话的最近活动时间推到当前时刻（列表按它分组与排序）。 */
+export function touchConversation(meta: ConversationMeta): void {
+	meta.updatedAt = Date.now();
 }
 
 /** 首条用户消息截断为会话标题：按码点取前 30 字符，截断时补省略号。 */

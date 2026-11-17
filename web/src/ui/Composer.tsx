@@ -1,22 +1,22 @@
 /**
- * Composer 席位（DSH InputBar + QueueDock + ContextMeter）：
- * - 28px 圆角胶囊卡：自动长高 textarea（336px 帽）+ 底部工具行。
- * - 工具行：左 workspace chip + 预设 chip；右 收藏 + 模型下拉 + 停止/发送。
+ * Composer 席位（Aria 输入卡 + Stella 的队列/用量）：
+ * - 纸白圆角卡：自动长高 textarea + 底部工具行。
+ * - 左：工作目录 chip + 预设 chip（只读）；右：上下文环 + 模型选择（每行带收藏星）+ 发送。
  * - 队列条：运行中排队项（插话/编辑/删除）+ busyEnter 切换。
- * - 用量：上下文环 + 累计 token/成本，点开分解面板。
+ * - 用量：上下文环 + 累计花费，点开分解面板（详情栏也显示上下文）。
  * - 指令菜单：整条输入还是 `/片段` 时在卡片上方弹出可选项（↑↓/Enter/Tab/Esc）。
- * 输入框为受控组件，本地 state（不经 store，避免光标跳动）。
  */
 
 import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { store } from "../store/app-store";
 import { type CommandSpec, availableCommands, matchCommands, slashQuery, usageOf } from "../store/commands";
-import { modelKey } from "../api";
+import { modelKey, type ModelInfo } from "../api";
 import { isComposingEvent } from "./composer-keys";
 import { ChevronDownIcon, FolderIcon, SendIcon, StarFilledIcon, StarOutlineIcon, StopIcon } from "./icons";
 import { useApp } from "./hooks";
+import { initialOf, presetOf, tintFor } from "./preset";
 
-const INPUT_MAX_HEIGHT = 336;
+const INPUT_MAX_HEIGHT = 260;
 /** 菜单最多列出的指令条数（再多也没人往下翻）。 */
 const MENU_LIMIT = 8;
 
@@ -27,7 +27,6 @@ export function ComposerSeat(): ReactNode {
 		<div className="composer-seat">
 			<QueueDock />
 			<Composer />
-			<UsageMeter />
 		</div>
 	);
 }
@@ -37,10 +36,10 @@ function Composer(): ReactNode {
 	const [value, setValue] = useState("");
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const disabled = app.conversationId === undefined;
+	const preset = presetOf(app, app.preset);
+	const targetName = preset?.name ?? "Stella";
 
 	// —— 指令菜单 ——
-	// query 是 `/` 之后的片段；出现空白即进入参数区，菜单自然收起。
-	// dismissed 只由用户动作（Esc / 选中）置位，任何输入都会复位。
 	const [active, setActive] = useState(0);
 	const [dismissed, setDismissed] = useState(false);
 	const query = disabled ? undefined : slashQuery(value);
@@ -49,19 +48,16 @@ function Composer(): ReactNode {
 	const activeIndex = Math.min(active, Math.max(0, options.length - 1));
 	const itemRefs = useRef(new Map<string, HTMLDivElement>());
 
-	// 片段变化后高亮回到第一条
 	useEffect(() => {
 		setActive(0);
 	}, [query]);
 
-	// 键盘上下移动时把高亮项滚进视口
 	useEffect(() => {
 		if (!menuOpen) return;
 		const name = options[activeIndex]?.name;
 		if (name !== undefined) itemRefs.current.get(name)?.scrollIntoView({ block: "nearest" });
 	}, [menuOpen, activeIndex, query]);
 
-	// 自动长高
 	const autosize = (): void => {
 		const el = textareaRef.current;
 		if (el === null) return;
@@ -69,14 +65,12 @@ function Composer(): ReactNode {
 		el.style.height = `${Math.min(el.scrollHeight, INPUT_MAX_HEIGHT)}px`;
 	};
 
-	// store 请求聚焦（新建会话 / 引用后）；挂载时先消费一次积压的请求
 	useEffect(() => {
 		const focusIfPending = (): void => {
 			if (store.consumeInputFocus()) textareaRef.current?.focus();
 		};
 		focusIfPending();
 		const off = store.on("focus-input", () => {
-			// 等一帧：hero ↔ docked 切换时本组件可能刚移到新父节点
 			requestAnimationFrame(() => {
 				if (store.consumeInputFocus()) textareaRef.current?.focus();
 			});
@@ -86,7 +80,6 @@ function Composer(): ReactNode {
 		};
 	}, []);
 
-	// 引用到输入框：store 写入草稿 → 同步本地 state 并聚焦
 	useEffect(() => {
 		const off = store.on("draft-set", () => {
 			setValue(store.takeDraft());
@@ -112,7 +105,6 @@ function Composer(): ReactNode {
 	const busy = app.busy;
 	const sendLabel = !busy ? "发送" : app.busyEnter === "steer" ? "插话发送" : "排队发送";
 
-	/** 选中一条指令：补全成 `/名字 ` 并收起菜单，焦点与光标留在输入框。 */
 	const accept = (spec: CommandSpec): void => {
 		const next = `/${spec.name} `;
 		setValue(next);
@@ -126,9 +118,6 @@ function Composer(): ReactNode {
 	};
 
 	const onKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>): void => {
-		// 输入法组合期间（中文/日文/韩文选词）按 Enter 是"确认候选"，
-		// 不能当发送：否则用户敲拼音按回车会把半截内容发出去。
-		// Safari 老版本不填 isComposing，用 keyCode 229 兜底。
 		if (isComposingEvent(e)) return;
 		if (menuOpen) {
 			const count = options.length;
@@ -144,7 +133,6 @@ function Composer(): ReactNode {
 			}
 			if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
 				e.preventDefault();
-				// 菜单打开时 Enter 是"确认指令"，第一次回车只补全，再回车才提交
 				accept(options[activeIndex]!);
 				return;
 			}
@@ -161,7 +149,7 @@ function Composer(): ReactNode {
 	};
 
 	return (
-		<footer id="composer" className="input-bar">
+		<footer id="composer" className="composer-shell">
 			{menuOpen && (
 				<div id="cmd-menu" className="cmd-pop" role="listbox" aria-label="可选指令">
 					<div className="cmd-head">指令</div>
@@ -177,7 +165,6 @@ function Composer(): ReactNode {
 								className={`cmd-item${index === activeIndex ? " is-active" : ""}`}
 								role="option"
 								aria-selected={index === activeIndex}
-								// 用 mousedown 抢先于 textarea 失焦：点选后光标仍在输入框里
 								onMouseDown={(e) => e.preventDefault()}
 								onMouseEnter={() => setActive(index)}
 								onClick={() => accept(spec)}
@@ -190,57 +177,64 @@ function Composer(): ReactNode {
 					<div className="cmd-foot">↑↓ 选择 · Enter 补全 · Esc 关闭</div>
 				</div>
 			)}
-			<div className="input-scroll">
-				<div className="grow">
-					<textarea
-						id="input"
-						ref={textareaRef}
-						rows={1}
-						aria-label="消息输入框"
-						aria-expanded={menuOpen}
-						aria-controls={menuOpen ? "cmd-menu" : undefined}
-						aria-activedescendant={menuOpen ? `cmd-option-${options[activeIndex]?.name ?? ""}` : undefined}
-						disabled={disabled}
-						placeholder={disabled ? "先新建一个会话…" : "给 Stella 发消息…（输入 / 调用指令）"}
-						value={value}
-						onChange={(e) => {
-							setValue(e.target.value);
-							setDismissed(false);
-							autosize();
-						}}
-						onBlur={() => setDismissed(true)}
-						onKeyDown={onKeyDown}
-					/>
-				</div>
-			</div>
-			<div className="row">
-				<div className="tools">
-					<WorkspaceChip />
-					<PresetChip />
-				</div>
-				<div className="trailing">
-					<ModelArea />
-					<button
-						id="stop"
-						className="send-btn stop"
-						type="button"
-						hidden={!busy}
-						aria-label="停止生成"
-						onClick={() => void store.stopRun()}
-					>
-						<StopIcon />
-					</button>
-					<button
-						id="send"
-						className="send-btn"
-						type="button"
-						disabled={disabled || value.trim().length === 0}
-						aria-label={sendLabel}
-						title={busy ? `${sendLabel}（Ctrl/Cmd+Enter 用另一种）` : sendLabel}
-						onClick={() => send("primary")}
-					>
-						<SendIcon />
-					</button>
+			<div className="composer">
+				<textarea
+					id="input"
+					ref={textareaRef}
+					className="composer-input"
+					rows={1}
+					aria-label="消息输入框"
+					aria-expanded={menuOpen}
+					aria-controls={menuOpen ? "cmd-menu" : undefined}
+					aria-activedescendant={menuOpen ? `cmd-option-${options[activeIndex]?.name ?? ""}` : undefined}
+					disabled={disabled}
+					placeholder={
+						disabled
+							? "先新建一个会话…"
+							: busy
+								? "正在运行，可以先写下一条想法…"
+								: `给「${targetName}」发送消息…`
+					}
+					value={value}
+					onChange={(e) => {
+						setValue(e.target.value);
+						setDismissed(false);
+						autosize();
+					}}
+					onBlur={() => setDismissed(true)}
+					onKeyDown={onKeyDown}
+				/>
+				<div className="composer-bar">
+					<div className="composer-left">
+						<WorkspaceChip />
+						<PresetChip />
+					</div>
+					<div className="composer-right">
+						<UsageMeter compact />
+						<ModelArea />
+						<button
+							id="stop"
+							className="send-btn stop"
+							type="button"
+							hidden={!busy}
+							aria-label="停止生成"
+							title="停止生成"
+							onClick={() => void store.stopRun()}
+						>
+							<StopIcon />
+						</button>
+						<button
+							id="send"
+							className="send-btn"
+							type="button"
+							disabled={disabled || value.trim().length === 0}
+							aria-label={sendLabel}
+							title={busy ? `${sendLabel}（Ctrl/Cmd+Enter 用另一种）` : sendLabel}
+							onClick={() => send("primary")}
+						>
+							<SendIcon />
+						</button>
+					</div>
 				</div>
 			</div>
 		</footer>
@@ -278,7 +272,6 @@ function WorkspaceChip(): ReactNode {
 		const onKey = (e: KeyboardEvent): void => {
 			if (e.key === "Escape") {
 				setOpen(false);
-				// 焦点归还触发按钮（键盘用户不丢位置）
 				requestAnimationFrame(() => document.getElementById("workspace-chip")?.focus());
 			}
 		};
@@ -308,7 +301,7 @@ function WorkspaceChip(): ReactNode {
 					<FolderIcon />
 				</span>
 				<span className="ws-label">{segments[segments.length - 1] ?? settings?.cwd ?? "工作目录"}</span>
-				<ChevronDownIcon />
+				<ChevronDownIcon width={10} height={10} />
 			</button>
 			{open && (
 				<div id="workspace-pop" className="ws-pop" role="dialog" aria-label="工作目录">
@@ -366,20 +359,22 @@ function WorkspaceChip(): ReactNode {
 	}
 }
 
-// —— 预设 chip（只读） ——
+// —— 预设 chip（只读；预设创建时锁定，不在会话内切换） ——
 
 function PresetChip(): ReactNode {
 	const app = useApp();
 	if (app.conversationId === undefined || app.preset === null) return null;
-	const preset = app.presets.find((item) => item.id === app.preset);
+	const preset = presetOf(app, app.preset);
+	const name = preset?.name ?? app.preset;
 	return (
 		<span id="preset-chip" className="chip preset-chip" title={preset?.description ?? `预设：${app.preset}`}>
-			{preset?.name ?? app.preset}
+			<span className={`chip-avatar tint-${tintFor(preset?.id)}`}>{initialOf(name)}</span>
+			<span className="chip-label">{name}</span>
 		</span>
 	);
 }
 
-// —— 模型区：收藏 + 下拉 ——
+// —— 模型区：触发按钮 + 自绘下拉（每行右侧的星即收藏） ——
 
 function ModelArea(): ReactNode {
 	const app = useApp();
@@ -387,19 +382,94 @@ function ModelArea(): ReactNode {
 	const none = app.conversationId === undefined;
 	const current = app.workspace?.model ?? null;
 	const currentKey = current === null ? "" : modelKey(current);
-	const isFavorite = current !== null && app.favorites.includes(currentKey);
+	const [open, setOpen] = useState(false);
+	const wrapRef = useRef<HTMLSpanElement>(null);
+	const triggerRef = useRef<HTMLButtonElement>(null);
+	const menuRef = useRef<HTMLDivElement>(null);
+
+	const close = (restoreFocus: boolean): void => {
+		setOpen(false);
+		if (restoreFocus) requestAnimationFrame(() => triggerRef.current?.focus());
+	};
+
+	// 点到模型区之外就收起
+	useEffect(() => {
+		if (!open) return;
+		const onPointerDown = (event: PointerEvent): void => {
+			if (event.target instanceof Node && wrapRef.current?.contains(event.target) === true) return;
+			setOpen(false);
+		};
+		document.addEventListener("pointerdown", onPointerDown);
+		return () => document.removeEventListener("pointerdown", onPointerDown);
+	}, [open]);
+
+	// 打开时把焦点放到当前模型那一行（找不到就第一行）
+	useEffect(() => {
+		if (!open) return;
+		const menu = menuRef.current;
+		const target =
+			menu?.querySelector<HTMLElement>(".model-item.is-current .model-item-name") ??
+			menu?.querySelector<HTMLElement>(".model-item-name");
+		target?.focus();
+	}, [open]);
+
+	const currentInfo = catalog?.models.find((model) => modelKey(model) === currentKey);
+	const triggerLabel =
+		current === null
+			? none
+				? "—"
+				: "加载中…"
+			: (currentInfo?.name ?? `${current.provider}/${current.modelId}`);
+
+	// 上下键在「模型名 / 收藏星」按钮之间移动（与原生下拉的键盘手感对齐）。
+	const moveFocus = (step: number): void => {
+		const menu = menuRef.current;
+		if (menu === null) return;
+		const buttons = [...menu.querySelectorAll<HTMLButtonElement>("button")];
+		if (buttons.length === 0) return;
+		const from = buttons.indexOf(document.activeElement as HTMLButtonElement);
+		const next = buttons[(from + step + buttons.length) % buttons.length];
+		next?.focus();
+	};
+
+	const trigger = (
+		<button
+			id="model-select"
+			ref={triggerRef}
+			className="model-select"
+			type="button"
+			aria-label="当前会话使用的模型"
+			aria-haspopup="menu"
+			aria-expanded={open}
+			disabled={none || catalog === undefined}
+			title={triggerLabel}
+			onClick={() => setOpen(!open)}
+			onKeyDown={(event) => {
+				if (event.key === "ArrowDown") {
+					event.preventDefault();
+					setOpen(true);
+				}
+			}}
+		>
+			<span className="model-label">{triggerLabel}</span>
+		</button>
+	);
 
 	if (catalog === undefined) {
 		return (
-			<select id="model-select" className="select" aria-label="当前会话使用的模型" disabled value="">
-				<option value="">{none ? "" : "加载中…"}</option>
-			</select>
+			<span className="model-wrap" ref={wrapRef}>
+				{trigger}
+				<span className="model-caret">
+					<ChevronDownIcon width={10} height={10} />
+				</span>
+			</span>
 		);
 	}
 
 	const byKey = new Map(catalog.models.map((model) => [modelKey(model), model]));
+	const currentMissing = current !== null && !byKey.has(currentKey);
 	const favoriteKeys = app.favorites.filter((key) => byKey.has(key));
-	const groups: { provider: string; label: string; models: typeof catalog.models }[] = [];
+	const groups: { provider: string; label: string; models: ModelInfo[] }[] = [];
 	for (const model of catalog.models) {
 		if (favoriteKeys.includes(modelKey(model))) continue;
 		const last = groups[groups.length - 1];
@@ -410,57 +480,94 @@ function ModelArea(): ReactNode {
 		}
 	}
 
+	const renderRow = (model: ModelInfo): ReactNode => {
+		const key = modelKey(model);
+		const selected = key === currentKey;
+		const favorite = app.favorites.includes(key);
+		return (
+			<div className={`model-item${selected ? " is-current" : ""}`} key={key} role="none">
+				<button
+					type="button"
+					role="menuitem"
+					className="model-item-name"
+					aria-current={selected ? "true" : undefined}
+					title={model.name}
+					onClick={() => {
+						void store.switchModel(key);
+						close(true);
+					}}
+				>
+					{model.name}
+				</button>
+				<button
+					type="button"
+					role="menuitem"
+					className={`model-fav${favorite ? " is-on" : ""}`}
+					title={favorite ? `取消收藏 ${model.name}` : `收藏 ${model.name}`}
+					aria-label={favorite ? `取消收藏 ${model.name}` : `收藏 ${model.name}`}
+					aria-pressed={favorite}
+					onClick={() => store.toggleFavoriteOf(key)}
+				>
+					{favorite ? <StarFilledIcon width={12} height={12} /> : <StarOutlineIcon width={12} height={12} />}
+				</button>
+			</div>
+		);
+	};
+
 	return (
-		<>
-			<button
-				id="toggle-favorite"
-				className={`icon-btn fav-btn${isFavorite ? " fav-on" : ""}`}
-				type="button"
-				title={isFavorite ? "取消收藏当前模型" : "收藏当前模型"}
-				aria-label={isFavorite ? "取消收藏当前模型" : "收藏当前模型"}
-				disabled={none}
-				onClick={() => store.toggleFavorite()}
-			>
-				{isFavorite ? <StarFilledIcon /> : <StarOutlineIcon />}
-			</button>
-			<select
-				id="model-select"
-				className="select"
-				aria-label="当前会话使用的模型"
-				disabled={none}
-				value={currentKey}
-				onChange={(e) => void store.switchModel(e.target.value)}
-			>
-				{favoriteKeys.length > 0 && (
-					<optgroup label="★ 收藏">
-						{favoriteKeys.map((key) => {
-							const model = byKey.get(key)!;
-							return (
-								<option key={key} value={key}>
-									{model.name}
-								</option>
-							);
-						})}
-					</optgroup>
-				)}
-				{groups.map((group) => (
-					<optgroup key={group.provider} label={group.label}>
-						{group.models.map((model) => (
-							<option key={modelKey(model)} value={modelKey(model)}>
-								{model.name}
-							</option>
-						))}
-					</optgroup>
-				))}
-			</select>
-		</>
+		<span className="model-wrap" ref={wrapRef}>
+			{trigger}
+			<span className="model-caret">
+				<ChevronDownIcon width={10} height={10} />
+			</span>
+			{open && (
+				<div
+					id="model-menu"
+					ref={menuRef}
+					className="model-menu"
+					role="menu"
+					aria-label="选择模型"
+					onKeyDown={(event) => {
+						if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+							event.preventDefault();
+							moveFocus(event.key === "ArrowDown" ? 1 : -1);
+						} else if (event.key === "Escape") {
+							event.preventDefault();
+							close(true);
+						}
+					}}
+				>
+					{currentMissing && current !== null && (
+						<>
+							<div className="model-group-label">当前</div>
+							<div className="model-item is-current" role="none">
+								<button type="button" role="menuitem" className="model-item-name" onClick={() => close(true)}>
+									{`${current.provider}/${current.modelId}（当前）`}
+								</button>
+							</div>
+						</>
+					)}
+					{favoriteKeys.length > 0 && (
+						<>
+							<div className="model-group-label">★ 收藏</div>
+							{favoriteKeys.map((key) => renderRow(byKey.get(key)!))}
+						</>
+					)}
+					{groups.map((group) => (
+						<div key={group.provider} role="group" aria-label={group.label}>
+							<div className="model-group-label">{group.label}</div>
+							{group.models.map((model) => renderRow(model))}
+						</div>
+					))}
+				</div>
+			)}
+		</span>
 	);
 }
 
-// —— 队列条（DSH QueueDock） ——
+// —— 队列条 ——
 
 function QueueDock(): ReactNode {
-	// 订阅 view.docs 的版本：排队项的新增/被消费都在同一运行内发生，app 快照不会变
 	const docsVersion = useSyncExternalStore(store.subscribeDocs, store.getDocsVersion);
 	const app = useApp();
 	const inbox = store.getInbox();
@@ -584,20 +691,19 @@ function ContextRing({ percent }: { percent: number | null }): ReactNode {
 	const dash = percent !== null && percent > 0 ? `${(circumference * Math.min(100, percent)) / 100} ${circumference}` : undefined;
 	return (
 		<svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true">
-			<circle cx="7" cy="7" r={radius} fill="none" stroke="var(--border-l3)" strokeWidth="2" />
+			<circle cx="7" cy="7" r={radius} fill="none" stroke="var(--line-strong)" strokeWidth="2" />
 			{dash !== undefined && (
-				<circle cx="7" cy="7" r={radius} fill="none" stroke="var(--brand-primary)" strokeWidth="2" strokeLinecap="round" strokeDasharray={dash} transform="rotate(-90 7 7)" />
+				<circle cx="7" cy="7" r={radius} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeDasharray={dash} transform="rotate(-90 7 7)" />
 			)}
 		</svg>
 	);
 }
 
-function UsageMeter(): ReactNode {
+function UsageMeter({ compact = false }: { compact?: boolean }): ReactNode {
 	const app = useApp();
 	const [open, setOpen] = useState(false);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const usageDoc = useSyncExternalStore(store.subscribeDocs, () => {
-		// 版本变化时返回 docs 引用（同一 view 内引用稳定，跨 view 才换）
 		store.getDocsVersion();
 		return store.getUsageDoc();
 	});
@@ -617,21 +723,27 @@ function UsageMeter(): ReactNode {
 		return null;
 	}
 	const percent = app.context?.percent ?? null;
-	const percentText = percent === null ? "—" : `${Math.round(percent)}%`;
-	// 缓存命中率：cacheRead / (input + cacheRead)
+	const percentText =
+		percent === null
+			? "—"
+			: percent > 0 && percent < 0.1
+				? "<0.1%"
+				: percent > 0 && percent < 1
+					? `${percent.toFixed(1)}%`
+					: `${Math.round(percent)}%`;
 	const cacheRead = Object.values(usageDoc?.models ?? {}).reduce((sum, u) => sum + (u.cacheRead ?? 0), 0);
 	const inputTokens = Object.values(usageDoc?.models ?? {}).reduce((sum, u) => sum + (u.input ?? 0), 0);
 	const cacheRate = cacheRead + inputTokens > 0 ? Math.round((cacheRead / (cacheRead + inputTokens)) * 100) : null;
 
 	return (
-		<div id="usage-meter" className="usage-meter" ref={rootRef}>
+		<div id="usage-meter" className={`usage-meter${compact ? " compact" : ""}`} ref={rootRef}>
 			<div className="usage-chips">
-				{stats.steps > 0 && (
+				{!compact && stats.steps > 0 && (
 					<span className="usage-chip" title="本会话的轮次与回答步数">
 						{`${stats.rounds} 轮 ${stats.steps} 步`}
 					</span>
 				)}
-				{usage.tokens > 0 && (
+				{!compact && usage.tokens > 0 && (
 					<span className="usage-chip" title="累计 token 与缓存命中率">
 						{`${formatTokens(usage.tokens)} tok`}
 						{cacheRate !== null && ` · 缓存命中 ${cacheRate}%`}

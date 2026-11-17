@@ -90,12 +90,12 @@ describe("主题偏好", () => {
 		theme.initTheme();
 		expect(dom.root.dataset.theme).toBe("dark");
 		expect(dom.root.style.colorScheme).toBe("dark");
-		expect(dom.meta.setAttribute).toHaveBeenCalledWith("content", "#151517");
+		expect(dom.meta.setAttribute).toHaveBeenCalledWith("content", "#1c1a17");
 
 		media.dark = false;
 		theme.initTheme();
 		expect(dom.root.dataset.theme).toBe("light");
-		expect(dom.meta.setAttribute).toHaveBeenLastCalledWith("content", "#ffffff");
+		expect(dom.meta.setAttribute).toHaveBeenLastCalledWith("content", "#fbfaf7");
 	});
 
 	it("存量非法值回落 system（不抛错）", async () => {

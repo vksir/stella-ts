@@ -26,6 +26,7 @@ import {
 	type UsageDoc,
 	type WorkspaceSettings,
 	extractText,
+	extractThinking,
 	fetchJson,
 	isToolResult,
 	modelKey,
@@ -83,11 +84,13 @@ export type FlowNode =
 			durationMs?: number;
 			timestamp?: number;
 			tokens?: number;
+			/** 该回答的思考正文（pi-ai thinking 块；为空则不带该字段）。 */
+			thinking?: string;
 			/** 该回答是被中断的（stopReason: aborted，例如服务崩溃/手动停止留下的部分回答）。 */
 			aborted?: boolean;
 	  }
 	| { key: string; type: "assistant-error"; message: string }
-	| { key: string; type: "streaming"; text: string }
+	| { key: string; type: "streaming"; text: string; thinking?: string }
 	| { key: string; type: "tool"; card: ToolCard }
 	| { key: string; type: "running" }
 	| { key: string; type: "stopped"; text: string }
@@ -128,6 +131,8 @@ export interface AppSnapshot {
 const BUSY_ENTER_KEY = "stella-busy-enter";
 const PRESET_KEY = "stella-preset";
 const FAVORITES_KEY = "stella.model-favorites";
+/** 上次打开的会话（刷新/重新登录后回到它，而不是永远回到列表第一条）。 */
+const LAST_CONVERSATION_KEY = "stella-last-conversation";
 
 function loadBusyEnter(): "queue" | "steer" {
 	try {
@@ -146,6 +151,26 @@ function loadFavorites(): string[] {
 		return parsed.filter((item): item is string => typeof item === "string");
 	} catch {
 		return [];
+	}
+}
+
+/** 上次打开的会话 id；没有/不合法时 undefined。 */
+function loadLastConversation(): number | undefined {
+	try {
+		const raw = localStorage.getItem(LAST_CONVERSATION_KEY);
+		if (raw === null) return undefined;
+		const id = Number.parseInt(raw, 10);
+		return Number.isInteger(id) && id >= 1 ? id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function rememberLastConversation(id: number): void {
+	try {
+		localStorage.setItem(LAST_CONVERSATION_KEY, String(id));
+	} catch {
+		/* 仅本次生效 */
 	}
 }
 
@@ -189,6 +214,19 @@ function callCard(
 		isError: result?.isError === true,
 		status,
 	};
+}
+
+/** 流式合帧载荷：正文与思考一起写进 streaming 节点。 */
+interface StreamingPayload {
+	text: string;
+	thinking: string;
+}
+
+/** streaming 节点工厂（思考为空不带该字段，保持节点快照小）。 */
+function streamingNode(text: string, thinking: string): FlowNode {
+	return thinking.length > 0
+		? { key: "streaming", type: "streaming", text, thinking }
+		: { key: "streaming", type: "streaming", text };
 }
 
 function slotCard(slot: LiveToolSlot, call: ContentBlock | undefined): ToolCard {
@@ -269,7 +307,8 @@ export class AppStore {
 	/** 待处理的聚焦请求：Composer 可能在本次 emit 之后才挂载（新建会话 / 空白态）。 */
 	private pendingFocus = false;
 	private framePending = false;
-	private pendingStreamingText: string | undefined;
+	/** 待合帧的流式载荷（正文 + 思考）；rAF 一次写入 streaming 节点。 */
+	private pendingStreaming: StreamingPayload | undefined;
 	private structureSignature = "";
 	/** 本次运行开始时间（busy false→true 时打点），用于「已完成，用时 N 秒」。 */
 	private runStartedAt: number | undefined;
@@ -374,11 +413,15 @@ export class AppStore {
 		void this.loadModelCatalog().catch((error) => this.showError(error));
 		void this.loadPresets().catch((error) => this.showError(error));
 		await this.refreshList();
-		const first = this.app.get().conversations[0]?.id;
-		if (first === undefined) {
+		const conversations = this.app.get().conversations;
+		// 优先回到上次打开的会话（文件夹/多标签场景下这才符合直觉）；它已被删除或
+		// 不存在时回落列表第一条，避免每次刷新都跳到同一个固定会话。
+		const remembered = loadLastConversation();
+		const target = conversations.find((conversation) => conversation.id === remembered)?.id ?? conversations[0]?.id;
+		if (target === undefined) {
 			await this.createConversation();
 		} else {
-			this.switchTo(first);
+			this.switchTo(target);
 		}
 	}
 
@@ -477,7 +520,7 @@ export class AppStore {
 		this.transcript.reset();
 		this.contextKey = "";
 		this.framePending = false;
-		this.pendingStreamingText = undefined;
+		this.pendingStreaming = undefined;
 		this.structureSignature = "";
 		this.runStartedAt = undefined;
 		this.activeRunFirst = undefined;
@@ -492,6 +535,7 @@ export class AppStore {
 		this.connect(id);
 		this.publish();
 		this.emit("scroll-instant");
+		rememberLastConversation(id);
 		void this.loadSettings(id).catch((error) => this.showError(error));
 	}
 
@@ -676,6 +720,9 @@ export class AppStore {
 
 		const heroEmpty =
 			state.conversationId !== undefined && !busy && entries.length === 0 && inbox.length === 0 && failure === undefined;
+		// 运行结束：服务端刚把 meta.updatedAt 推到完成时刻，刷新列表让侧栏分组/相对时间跟上。
+		if (state.busy && !busy) void this.refreshList().catch(() => undefined);
+
 		const appPatch: Partial<AppSnapshot> = { busy, heroEmpty, blank: state.conversationId === undefined };
 		if (
 			appPatch.busy !== state.busy ||
@@ -685,28 +732,36 @@ export class AppStore {
 			this.patchApp(appPatch);
 		}
 
-		// 流式 partial：仅 rAF 合帧更新 streaming 节点（结构未变时）
+		// 流式 partial：正文与思考一起合帧——结构未变时只 rAF 更新 streaming 节点，
+		// 两者都为空时不建节点（只留运行状态行）。
 		const runFirst = run?.first;
 		const answerCommitted =
 			runFirst !== undefined && entries.some((entry) => entry.kind === "pi.assistant" && entry.id >= runFirst);
-		const streamingText = busy && partial !== undefined && !answerCommitted ? extractText(partial) : undefined;
-		if (streamingText !== undefined && !structural) {
-			this.pendingStreamingText = streamingText;
-			// 首次出现流式文本时，结构化派生可能已经跑过（那时 partial 还是空的），
+		const partialStream =
+			busy && partial !== undefined && !answerCommitted
+				? { text: extractText(partial), thinking: extractThinking(partial) }
+				: undefined;
+		const streaming =
+			partialStream !== undefined && (partialStream.text.length > 0 || partialStream.thinking.length > 0)
+				? partialStream
+				: undefined;
+		if (streaming !== undefined && !structural) {
+			this.pendingStreaming = streaming;
+			// 首次出现流式内容时，结构化派生可能已经跑过（那时 partial 还是空的），
 			// keys 里没有 streaming 座位 —— 必须补上，否则节点更新了却没人渲染。
 			this.ensureStreamingSeat();
 			if (!this.framePending) {
 				this.framePending = true;
 				requestAnimationFrame(() => {
 					this.framePending = false;
-					const text = this.pendingStreamingText;
-					if (text !== undefined) this.nodes.set("streaming", { key: "streaming", type: "streaming", text });
+					const pending = this.pendingStreaming;
+					if (pending !== undefined) this.nodes.set("streaming", streamingNode(pending.text, pending.thinking));
 				});
 			}
 			return;
 		}
-		this.pendingStreamingText = streamingText;
-		if (streamingText === undefined && this.nodes.get("streaming") != null) {
+		this.pendingStreaming = streaming;
+		if (streaming === undefined && this.nodes.get("streaming") != null) {
 			this.nodes.set("streaming", null);
 		}
 
@@ -777,6 +832,7 @@ export class AppStore {
 						renderedCalls.add(block.id);
 						calls.push(callCard(block, toolResults.get(block.id), liveSlots.get(block.id)));
 					}
+					const thinking = extractThinking(message);
 					pushEntryNode(entry, {
 						key: `e:${entry.id}`,
 						type: "assistant",
@@ -786,6 +842,7 @@ export class AppStore {
 						durationMs: message?.durationMs ?? this.durationFor(entry.id),
 						timestamp: message?.timestamp,
 						tokens: message?.usage?.totalTokens,
+						...(thinking.length > 0 ? { thinking } : {}),
 						aborted: message?.stopReason === "aborted",
 					});
 					break;
@@ -814,9 +871,9 @@ export class AppStore {
 		}
 
 		// 流式节点 / 运行中工具槽位 / 运行状态行 / 错误卡片 / 停止行
-		if (streamingText !== undefined) {
-			this.pendingStreamingText = streamingText;
-			nodes.push({ key: "streaming", type: "streaming", text: streamingText });
+		if (streaming !== undefined) {
+			this.pendingStreaming = streaming;
+			nodes.push(streamingNode(streaming.text, streaming.thinking));
 		}
 		if (busy && live !== undefined) {
 			for (const slot of live.tools ?? []) {
@@ -1195,10 +1252,8 @@ export class AppStore {
 		}
 	}
 
-	toggleFavorite(): void {
-		const model = this.app.get().workspace?.model;
-		if (model == null) return;
-		const key = modelKey(model);
+	/** 收藏 / 取消收藏任意模型（模型下拉每行右侧的星）。 */
+	toggleFavoriteOf(key: string): void {
 		const favorites = this.app.get().favorites;
 		const wasFavorite = favorites.includes(key);
 		const next = wasFavorite ? favorites.filter((item) => item !== key) : [...favorites, key];
@@ -1208,9 +1263,9 @@ export class AppStore {
 			/* 仅本次生效 */
 		}
 		this.patchApp({ favorites: next });
-		this.showToast(
-			wasFavorite ? `已取消收藏 ${this.displayNameOf(model)}` : `已收藏 ${this.displayNameOf(model)}，排在列表最前`,
-		);
+		const info = this.app.get().modelCatalog?.models.find((item) => modelKey(item) === key);
+		const name = info === undefined ? key : `${info.name}（${info.providerName}）`;
+		this.showToast(wasFavorite ? `已取消收藏 ${name}` : `已收藏 ${name}，排在列表最前`);
 	}
 
 	// —— 工作目录 ——
@@ -1325,19 +1380,20 @@ export class AppStore {
 	}
 }
 
-/** 节点浅比较（calls 数组逐项比较；text 直接比较）。 */
+/** 节点浅比较（calls 数组逐项比较；text / thinking 直接比较）。 */
 function shallowEqualNode(a: FlowNode, b: FlowNode): boolean {
 	if (a.type !== b.type) return false;
 	if (a.type === "user" && b.type === "user") return a.text === b.text && a.reveal === b.reveal && a.timestamp === b.timestamp;
 	if (a.type === "assistant" && b.type === "assistant") {
 		if (a.durationMs !== b.durationMs || a.timestamp !== b.timestamp || a.tokens !== b.tokens) return false;
 		if (a.aborted !== b.aborted) return false;
+		if (a.thinking !== b.thinking) return false;
 		return a.text === b.text && a.reveal === b.reveal && a.calls.length === b.calls.length && a.calls.every((card, index) => {
 			const other = b.calls[index];
 			return other !== undefined && card.name === other.name && card.summary === other.summary && card.status === other.status && card.isError === other.isError && card.output === other.output && card.argsText === other.argsText;
 		});
 	}
-	if (a.type === "streaming" && b.type === "streaming") return a.text === b.text;
+	if (a.type === "streaming" && b.type === "streaming") return a.text === b.text && a.thinking === b.thinking;
 	if (a.type === "tool" && b.type === "tool") {
 		return a.card.name === b.card.name && a.card.summary === b.card.summary && a.card.status === b.card.status && a.card.output === b.card.output && a.card.isError === b.card.isError;
 	}

@@ -19,8 +19,12 @@ import type { MiddlewareHandler } from "hono";
 import type { Context } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
 
+import { isLoopbackHost, type StellaConfig } from "./config.js";
+
 /** 票据有效期：固定 30 天，不做滑动续期（见 ADR-0004）。 */
 export const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** 登录密钥的最小长度：32 字符（生成器给 43 字符）。 */
+export const MIN_LOGIN_KEY_LENGTH = 32;
 /** 登录失败限速：窗口内允许的失败次数。 */
 export const LOGIN_FAILURE_LIMIT = 5;
 /** 登录失败限速窗口（毫秒）。 */
@@ -29,6 +33,50 @@ export const LOGIN_FAILURE_WINDOW_MS = 60_000;
 /** 生成一枚登录密钥：32 字节随机数的 base64url（43 字符）。 */
 export function generateLoginKey(): string {
 	return randomBytes(32).toString("base64url");
+}
+
+/** 登录密钥太短时抛错：它同时是票据的 HMAC 密钥，弱密钥可被离线猜测。 */
+export function assertLoginKeyStrength(key: string): void {
+	if (key.length >= MIN_LOGIN_KEY_LENGTH) return;
+	throw new Error(
+		`STELLA_TOKEN 太短（${key.length} 字符，至少 ${MIN_LOGIN_KEY_LENGTH} 字符）。\n` +
+			"登录密钥同时是票据的 HMAC 密钥，弱密钥可被离线猜测。\n" +
+			"请执行 `npm run token:gen` 生成一枚（43 字符），写入 .env 后重启。",
+	);
+}
+
+/**
+ * 启动前的部署安全断言：拒绝把“未鉴权”或“明文”入口暴露到非回环地址。
+ *
+ * - 非回环且没有登录密钥（典型是 faux 模式未配 STELLA_TOKEN）→ 拒绝；
+ * - 登录密钥短于 32 字符 → 拒绝；
+ * - 非回环且 `STELLA_REQUIRE_HTTPS` 未显式设置 → 拒绝；显式 `0`/`false` 视为知情选择。
+ */
+export function assertDeploymentSafety(config: StellaConfig): void {
+	const loopback = isLoopbackHost(config.host);
+	if (config.trustedProxies.some((rule) => rule.trim() === "0.0.0.0/0")) {
+		throw new Error(
+			"STELLA_TRUSTED_PROXY 不能是 0.0.0.0/0。\n" +
+				"这会让任何直连方都能伪造 X-Forwarded-For / X-Forwarded-Proto，" +
+				"绕过登录限速和 HTTPS 闸门。请只列反向代理的真实 IP 或最小网段。",
+		);
+	}
+	if (!loopback && config.token === undefined) {
+		throw new Error(
+			`监听 ${config.host} 但没有启用登录密钥。\n` +
+				"拒绝启动：这会让任何能访问该端口的人直接使用文件与命令工具。\n" +
+				"请配置 STELLA_TOKEN（npm run token:gen），或把 STELLA_HOST 改回 127.0.0.1。",
+		);
+	}
+	if (config.token !== undefined) assertLoginKeyStrength(config.token);
+	if (!loopback && !config.httpsRequired && !config.httpsConfigured) {
+		throw new Error(
+			`监听 ${config.host} 但没有设置 STELLA_REQUIRE_HTTPS。\n` +
+				"拒绝启动：非回环地址上的明文 HTTP 会让登录密钥和 30 天票据以明文传输。\n" +
+				"请让反向代理终止 TLS 并设置 STELLA_REQUIRE_HTTPS=1（反代需覆盖 X-Forwarded-Proto: https）。\n" +
+				"如果确实要在局域网用明文 HTTP，显式设置 STELLA_REQUIRE_HTTPS=0。",
+		);
+	}
 }
 
 // —— 密钥来源：显式配置 / faux 豁免 / 首次部署自动生成 ——
@@ -60,8 +108,12 @@ export function resolveLoginKey(
 	if (explicit !== undefined && explicit.length > 0) {
 		return {
 			key: explicit,
-			...(explicit.length < 16
-				? { note: "STELLA_TOKEN 偏短（少于 16 字符），建议用 npm run token:gen 重新生成。" }
+			...(explicit.length < MIN_LOGIN_KEY_LENGTH
+				? {
+						note:
+							`STELLA_TOKEN 偏短（${explicit.length} 字符，至少 ${MIN_LOGIN_KEY_LENGTH} 字符）：` +
+							"启动会被拒绝。请用 npm run token:gen 重新生成。",
+					}
 				: {}),
 		};
 	}
@@ -177,14 +229,15 @@ export class LoginThrottle {
 		return entry.count >= LOGIN_FAILURE_LIMIT ? entry.resetAt - now : 0;
 	}
 
-	recordFailure(source: string, now: number = Date.now()): void {
+	recordFailure(source: string, now: number = Date.now()): number {
 		if (this.entries.size >= LoginThrottle.MAX_ENTRIES) this.entries.clear();
 		const entry = this.entries.get(source);
 		if (entry === undefined) {
 			this.entries.set(source, { count: 1, resetAt: now + LOGIN_FAILURE_WINDOW_MS });
-			return;
+			return 1;
 		}
 		entry.count += 1;
+		return entry.count;
 	}
 
 	reset(source: string): void {
@@ -199,33 +252,126 @@ export class LoginThrottle {
 	}
 }
 
-function isLoopback(address: string | undefined): boolean {
-	if (address === undefined) return false;
-	return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+// —— 来源与协议：信任模型 ——
+//
+// `X-Forwarded-For` / `X-Forwarded-Proto` 只有直连方是**可信反向代理**时才看：
+// 不可信来源随手伪造就能绕过登录限速、伪装 HTTPS。可信名单由 `STELLA_TRUSTED_PROXY`
+// 给出（默认只有回环）。
+
+/** 去掉 IPv6 的 zone id，并把 IPv4-mapped 地址归一成 IPv4。 */
+function normalizeAddress(address: string): string {
+	const lowered = address.trim().toLowerCase();
+	const zone = lowered.indexOf("%");
+	const bare = zone >= 0 ? lowered.slice(0, zone) : lowered;
+	if (bare.startsWith("::ffff:")) {
+		const mapped = bare.slice("::ffff:".length);
+		if (mapped.includes(".")) return mapped;
+	}
+	return bare;
+}
+
+function ipv4ToInt(ip: string): number | undefined {
+	const parts = ip.split(".");
+	if (parts.length !== 4) return undefined;
+	let value = 0;
+	for (const part of parts) {
+		if (!/^\d{1,3}$/.test(part)) return undefined;
+		const octet = Number(part);
+		if (octet > 255) return undefined;
+		value = value * 256 + octet;
+	}
+	return value >>> 0;
+}
+
+/** IPv4 地址是否落在 CIDR 内（`base/bits`）。非 IPv4 或写法非法时 false。 */
+function ipv4InCidr(address: string, rule: string): boolean {
+	const slash = rule.indexOf("/");
+	if (slash <= 0) return false;
+	const base = rule.slice(0, slash);
+	const bits = Number.parseInt(rule.slice(slash + 1), 10);
+	if (!Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+	const candidate = ipv4ToInt(address);
+	const network = ipv4ToInt(base);
+	if (candidate === undefined || network === undefined) return false;
+	if (bits === 0) return true;
+	const mask = (0xffffffff << (32 - bits)) >>> 0;
+	return (candidate & mask) === (network & mask);
 }
 
 /**
- * 请求来源地址（限速用）。
- *
- * 只有直连方是本机时才信 `X-Forwarded-For`：本地反向代理（nginx / Caddy）会把真实
- * 客户端地址写在那里，不这样做的话所有人（含部署者）会共用一个 127.0.0.1 计数。
- * 直连公网时不看这个头——否则攻击者随手伪造就能绕过限速。取最右一项：它是最近一层
- * 代理追加的，单层反代下就是真实客户端地址。
+ * 直连地址是否可信代理。支持精确 IP（IPv4/IPv6）与 IPv4 CIDR；
+ * IPv6 只支持精确匹配（含 `/128`），不做 IPv6 CIDR 计算。
  */
-export function clientSource(c: Context): string {
-	let peer: string | undefined;
+export function isTrustedProxy(address: string | undefined, trusted: readonly string[]): boolean {
+	if (address === undefined) return false;
+	const candidate = normalizeAddress(address);
+	for (const raw of trusted) {
+		const rule = normalizeAddress(raw);
+		if (rule.length === 0) continue;
+		const slash = rule.indexOf("/");
+		if (slash < 0) {
+			if (rule === candidate) return true;
+			continue;
+		}
+		// IPv6 的 `/128` 等价于精确匹配（其余 IPv6 前缀不支持，文档已标明）。
+		if (rule.endsWith("/128") && normalizeAddress(rule.slice(0, -4)) === candidate) return true;
+		if (ipv4InCidr(candidate, rule)) return true;
+	}
+	return false;
+}
+
+/**
+ * 从直连地址与请求头解析客户端来源。
+ *
+ * 直连方不可信时只返回直连地址（头部一律忽略）；可信时取 `X-Forwarded-For` 的**最右一项**
+ * ——它是最近一层代理追加的，单层反代下就是真实客户端地址。多层代理需自行保证层数与顺序。
+ */
+export function sourceFrom(
+	peer: string | undefined,
+	forwardedFor: string | undefined,
+	trusted: readonly string[],
+): string {
+	const direct = peer ?? "local";
+	if (!isTrustedProxy(peer, trusted)) return direct;
+	const last = forwardedFor
+		?.split(",")
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0)
+		.at(-1);
+	return last ?? direct;
+}
+
+/**
+ * 请求实际使用的协议（只有可信代理的 `X-Forwarded-Proto` 才算数）。
+ * 多层代理取最左一项（原始客户端协议）。无法判断时 undefined。
+ */
+export function requestProto(
+	peer: string | undefined,
+	forwardedProto: string | undefined,
+	trusted: readonly string[],
+): "http" | "https" | undefined {
+	if (!isTrustedProxy(peer, trusted)) return undefined;
+	const value = forwardedProto?.split(",")[0]?.trim().toLowerCase();
+	return value === "https" || value === "http" ? value : undefined;
+}
+
+/** 连接的直连地址（进程内调用没有 socket，返回 undefined）。 */
+export function peerAddress(c: Context): string | undefined {
 	try {
-		peer = getConnInfo(c).remote.address;
+		return getConnInfo(c).remote.address;
 	} catch {
-		// 进程内调用（测试）没有 socket。
-		return "local";
+		return undefined;
 	}
-	if (isLoopback(peer)) {
-		const forwarded = c.req.header("x-forwarded-for");
-		const last = forwarded?.split(",").map((part) => part.trim()).filter((part) => part.length > 0).at(-1);
-		if (last !== undefined) return last;
-	}
-	return peer ?? "local";
+}
+
+/** 请求来源地址（限速与日志用）。 */
+export function clientSource(c: Context, trusted: readonly string[]): string {
+	return sourceFrom(peerAddress(c), c.req.header("x-forwarded-for"), trusted);
+}
+
+/** 请求实际协议：可信代理的 `X-Forwarded-Proto`；直连时 undefined。 */
+export function connectionProto(c: Context, trusted: readonly string[]): "http" | "https" | undefined {
+	return requestProto(peerAddress(c), c.req.header("x-forwarded-proto"), trusted);
 }
 
 // —— Hono 中间件 ——

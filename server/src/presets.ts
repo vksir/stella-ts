@@ -137,6 +137,7 @@ export function resolvePresetAgent(
 			? {}
 			: { instructions: preset.instructions }),
 		maxTurns: preset.maxTurns ?? runtime.defaultMaxTurns,
+		...(preset.thinkingLevel === undefined ? {} : { thinkingLevel: preset.thinkingLevel }),
 	};
 	return { preset, agent, skills };
 }

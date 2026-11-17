@@ -8,7 +8,7 @@ Stella 是一个万用日常型 Web Agent：通过浏览器页面对话，能读
 
 ```
 server/   服务端（Node 24、TS ESM、Hono + @hono/node-server、pi-durable Harness）
-web/      前端（React 18 + Vite 6；渲染内核复刻 dsh：每 key 订阅 + 增量 Markdown）
+web/      前端（React 18 + Vite 6；渲染内核参考 dsh：每 key 订阅 + 增量 Markdown；外观为纸感三栏工作台）
 data/     运行时数据（SQLite 数据库、默认工作区 data/workspace、技能目录 data/skills，已 gitignore）
 ```
 
@@ -18,14 +18,14 @@ data/     运行时数据（SQLite 数据库、默认工作区 data/workspace、
 
 ```bash
 npm install
-npm run dev        # 并行起 server(:7090) 与 Vite(:5173)，浏览器打开 http://localhost:5173
+npm run dev        # 并行起 server(:5810) 与 Vite(:5811)，浏览器打开 http://localhost:5811
 ```
 
 生产模式：
 
 ```bash
 npm run build
-npm start          # node server/dist/main.js，同时伺服 web/dist，打开 http://localhost:7090
+npm start          # node server/dist/main.js，同时伺服 web/dist，打开 http://localhost:5810
 ```
 
 ### 免 key 体验（faux 模式）
@@ -62,16 +62,28 @@ cp .env.example .env   # 然后编辑 .env
 Stella 没有用户系统，只有一把锁：**登录密钥**（`STELLA_TOKEN`）。凡能访问端口的人必须先在登录页
 输入它，才能使用页面对话、文件与命令工具。
 
-- **首次启动自动生成**：没有 `STELLA_TOKEN` 时，服务端生成一枚 32 字节随机密钥并追加进
-  **已存在的那个 `.env`**（当前目录优先，其次仓库根），只在启动日志里打印一次。两个位置都没有
+- **首次启动自动生成**：没有 `STELLA_TOKEN` 时，服务端生成一枚 32 字节随机密钥（43 字符）并追加进
+  **已存在的那个 `.env`**（当前目录优先，其次仓库根）；密钥不回显，请从 `.env` 读取。两个位置都没有
   可写的 `.env` 时启动失败，提示手动写：`npm run token:gen` 生成后粘贴 `STELLA_TOKEN=<那一串>`。
+  显式配置的 `STELLA_TOKEN` 少于 32 字符时**启动失败**（它同时是票据的 HMAC 密钥）。
 - **浏览器不持有密钥**：登录时用它换一枚 HMAC 签名的**票据**（30 天固定过期），之后请求带
   `Authorization: Bearer <票据>`；密钥本身始终只在服务端。
 - **退出**只清掉本浏览器的票据；服务端不存会话表，因此无法单独吊销某一台设备。
   要让所有浏览器重新登录：改 `.env` 的 `STELLA_TOKEN` 后**重启**（配置只在启动时读取）。
-- **faux 模式**（`STELLA_FAUX=1`）与测试，在**未配 `STELLA_TOKEN` 时**不启用登录；两者同时存在时以显式配置的密钥为准（E2E 验证就靠这个组合）。
-- 登录失败按来源限速（60 秒内 5 次）。来源取连接地址；直连方是本机（即经本地反向代理）时取 `X-Forwarded-For` 的最右一项。
-- `/api/health` 免鉴权（监控探针用，只返回 `{ok:true}`）。
+- **faux 模式**（`STELLA_FAUX=1`）与测试，在**未配 `STELLA_TOKEN` 时**不启用登录；两者同时存在时以显式配置的密钥为准（E2E 验证就靠这个组合）。未配密钥的 faux 只允许监听回环地址，非回环会**拒绝启动**。
+- 登录失败按来源限速（60 秒内 5 次）。来源取连接地址；直连方在 `STELLA_TRUSTED_PROXY`
+  名单内（默认只有回环）时取 `X-Forwarded-For` 的最右一项，否则忽略该头防伪造。
+- **公网部署必须让反代强制 HTTPS**：`STELLA_REQUIRE_HTTPS=1` 时，除 `/api/health` 外
+  **所有 `/api` 请求**（不只是登录）都必须有可信 `X-Forwarded-Proto: https`；直连端口即使拿到票据
+  也无法用明文调用 API。即使不开，反代明确标为 `http` 的请求也会被拒。非回环监听
+  （`STELLA_HOST` 不是 127.0.0.1/localhost/::1）在未显式设置该项时**拒绝启动**；确实要在局域网
+  用明文 HTTP 才显式写 `STELLA_REQUIRE_HTTPS=0`。
+- **反代与 Stella 不同机时**（Docker 网桥、另一台机器）要把反代地址加进 `STELLA_TRUSTED_PROXY`，
+  否则所有客户端共用一个来源：登录限速退化成全局桶（攻击者 5 次失败就能把你锁在门外），
+  真实 IP 也进不了日志。最省事的做法仍是反代与 Stella 同机、Stella 只绑回环。
+- **API 有请求体上限**：普通接口 4MB，登录接口 4KB。
+- **SSE 需要反代关闭缓冲**：应用已发 `X-Accel-Buffering: no`，nginx 仍需
+  `proxy_buffering off; proxy_read_timeout 1h; proxy_http_version 1.1;`，否则流式回答会攒成整批。
 - **TLS 由反向代理终止**：Stella 自身不提供 HTTPS，直连公网等于明文传密钥。
 - 实现取舍见 [`docs/adr/0004-login-key-over-trusted-localhost.md`](docs/adr/0004-login-key-over-trusted-localhost.md)。
 
@@ -81,15 +93,18 @@ Stella 没有用户系统，只有一把锁：**登录密钥**（`STELLA_TOKEN`�
 |---|---|
 | `<PROVIDER>_API_KEY` | 见 `.env.example` 的九个映射（deepseek / zai / moonshotai-cn / openrouter / opencode-go / openai / anthropic / groq / xai） |
 | `STELLA_DEFAULT_MODEL` | 默认模型 `provider/modelId`，缺省 `deepseek/deepseek-chat` |
-| `STELLA_PORT` | server 端口，默认 7090（Vite 代理目标） |
-| `STELLA_HOST` | 监听地址，默认 `127.0.0.1`（**只有本机能连**）。对外（局域网、Docker 端口映射、反代）必须显式设 `0.0.0.0` 或具体网卡地址；非回环时启动日志会告警 |
-| `STELLA_TOKEN` | 登录密钥。缺省时首次启动自动生成并写入 `.env`；改这一行并重启可让所有浏览器重新登录 |
+| `STELLA_PORT` | server 端口，默认 5810（Vite 代理目标） |
+| `STELLA_HOST` | 监听地址，默认 `127.0.0.1`（**只有本机能连**）。对外（局域网、Docker 端口映射、反代）必须显式设 `0.0.0.0` 或具体网卡地址；非回环时还必须显式设置 `STELLA_REQUIRE_HTTPS=1`（或显式 `0`），否则**启动失败** |
+| `STELLA_TRUSTED_PROXY` | 可信反向代理名单（逗号分隔的 IP 或 IPv4 CIDR，默认 `127.0.0.1,::1`）。只有直连方在此名单内才信任 `X-Forwarded-For` / `X-Forwarded-Proto`；写 `0.0.0.0/0` 会拒绝启动 |
+| `STELLA_REQUIRE_HTTPS` | `1` 时除 `/api/health` 外所有 `/api` 请求都要求可信 `X-Forwarded-Proto: https`；非回环监听未显式设置时启动失败，显式 `0` 才允许明文（自担风险） |
+| `STELLA_WEB_DIST` | 前端构建产物目录，默认 `../web/dist`（相对进程 cwd；不从 `server/` 启动时必须显式指定） |
+| `STELLA_TOKEN` | 登录密钥，至少 32 字符。缺省时首次启动自动生成 43 字符密钥并写入 `.env`；短于 32 字符启动失败；改这一行并重启可让所有浏览器重新登录 |
 | `STELLA_DATA_DIR` | 数据目录（SQLite + 默认工作区 + `stella.config.json`），默认 `./data`（相对 server 进程 cwd） |
 | `STELLA_ATTRIBUTION_URL` | 模型请求 attribution 的 url（OpenRouter 排行分组），缺省 `http://localhost` |
 | `STELLA_FAUX` | `1` 时 faux provider + 内存存储（免 key 体验/测试） |
 | `STELLA_FAUX_RATE` | faux 模式下的流式速率（tokens/s），用于观察排队/停止；不配则瞬时完成 |
 | `STELLA_ENTRY_WINDOW` | SSE view 携带的最近条目数，默认 200（范围 4–400）。调小便于在短会话上验证「加载更早」与断线补页，调大用于长会话压测 |
-| `STELLA_ORIGIN` | 仅 Vite dev 使用：`/api` 代理目标，默认 `http://localhost:7090`（例如给沙箱实例换端口） |
+| `STELLA_ORIGIN` | 仅 Vite dev 使用：`/api` 代理目标，默认 `http://localhost:5810`（例如给沙箱实例换端口） |
 
 ## 运行配置（`data/stella.config.json`）
 
@@ -176,19 +191,20 @@ description: 把散乱的会议记录整理成结构化纪要。需要整理会�
 - **交互**：运行中发送默认排队（composer 上方的队列条，逐项插话/编辑/删除），Ctrl/Cmd+Enter 用另一种投递方式；失败后的「续跑」走 `{ continue: true }`，不重复用户消息；`/compact [说明]` 是手动压缩指令。
 - **指令**：输入框里以 `/` 开头的单行输入由客户端本地执行，不进消息流。敲下 `/`（尚未输入到参数）时 composer 上方弹出可选指令表，↑↓ 选、Enter/Tab 补全、Esc 关闭、点选也行；当前有 `/compact [说明]`（压缩）、`/new`（新建会话）与运行中才出现的 `/stop`（停止）。未登记的名字（`/usr/bin`）仍当普通消息发给模型。
 - **预设**：创建会话时从侧栏选择（配置文件可新增），能力解析进 `pi.agent` 后显示为 composer 的只读 chip。
-- **上下文/花费**：composer 下方的小环显示上下文占用（优先 provider usage，缺失时启发式估算），点开看系统/工具/消息分解与累计 token/成本。
+- **上下文/花费**：composer 的上下文环与右侧详情栏都显示占用（优先 provider usage，缺失时启发式估算），点开看系统/工具/消息分解与累计 token/成本。
 - **工具**：`read`/`write`/`edit`/`bash`（read 带图片处理器）、`codemode`（QuickJS 沙箱，脚本调用工具）、`subagent`（前台子代理，子会话拥有独立上下文）；经 `NodeExecutionEnv` 在会话工作目录直接执行（本机部署、无沙箱，见 ADR）。`StellaGuard` 只拦毁灭性命令，能力边界由预设负责。新会话工作目录缺省为默认工作区 `data/workspace`。
 - **技能**：`data/skills/<名字>/SKILL.md` 里的 name/description 被渲染进系统提示，正文由模型 `read` 按需读取；清单在创建会话时定格进会话文档，目录变化只影响新会话（ADR-0005）。
 - **人设**：英语 section（万用日常型助手、回复跟随用户语言），不偏向编程。
 - **持久化**：`data/stella.sqlite`（`node:sqlite`）；重启后 `harness.resume()` 续跑未完成的运行。
-- **前端渲染内核**（复刻 DeepSeek Harness，见 ADR-0003）：React 18 + 自研 store（`useSyncExternalStore`，不引状态管理库/组件库/Tailwind）。
+- **前端渲染内核**（参考 DeepSeek Harness，见 ADR-0003）：React 18 + 自研 store（`useSyncExternalStore`，不引状态管理库/组件库/Tailwind）。
   - 消息流按稳定 key 拆成 seat，**每个 seat 只订阅自己的数据切片**：流式输出时只有流式节点重渲，历史消息 DOM 不动（实测 200+ 次采样、历史节点变化 0）。
   - Markdown 走**冻结块增量解析**（`mdast-util-from-markdown` + GFM，末尾 2 块之外冻结），每 chunk 只重 parse 尾部切片；React key 取块源文本起始偏移，跨冻结边界不 remount。
   - 流式更新走 rAF 合帧（一帧至多一次）；受控输入同步通知，textarea 不跳光标。
   - 代码高亮用 shiki（JS 正则引擎、无 WASM），按需动态加载（主包 ~300KB）；落定整块高亮，流式中走 `StreamingHighlightSession`（行级缓存 + grammar 状态续接）。
-  - 观感层为单一 `style.css`（三层 token 体系），与 dsh 逐项对齐；明暗双主题经 `html[data-theme]` 切换。
+  - 观感层为单一 `style.css`（纸白 / 墨色 / 苔绿 / 暖沙的纸感 token 体系，见 ADR-0006）：三栏布局（侧栏 / 对话 / 详情栏），<1280px 详情变抽屉、<900px 侧栏变抽屉；浅色为验收基准，深色是同一套 token 的夜间纸感派生，经 `html[data-theme]` 切换。
+  - 字体自托管 Instrument Serif（标题西文）与 Inter（正文西文，OFL），中文衬线走系统栈（Noto Serif SC / Songti SC / SimSun）；不依赖 Google Fonts，离线可用。
 
-测试：`npm test`（186 项，零网络零 key）。
+测试：`npm test`（200 项，零网络零 key）。
 
 - **server（76）**：faux provider + MemoryStorage 进程内起 app，验证「POST 消息 → SSE 收到用户条目与回答条目」闭环，以及翻页/`?from=` 续订、排队与错误重试、工作目录工具、上下文占用、续跑、压缩、技能扫描与预设白名单/会话快照等契约。
 - **web（110）**：增量 Markdown 冻结块（7）、Markdown 渲染类名契约（13）、转写窗口合并与缺口（10）、节点总线（10）、失败文案与工具摘要（19）、斜杠指令匹配与拦截（15）、流式高亮（12，含真实 shiki）、键盘/输入法判定（4）、主题（5）。

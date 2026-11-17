@@ -119,9 +119,12 @@ export function SkillsPanel({ presets, initialPreset, onClose }: SkillsPanelProp
 			<div className="modal-mask" onClick={onClose} />
 			<div className="modal-dialog skills-dialog" role="dialog" aria-modal="true" aria-labelledby="skills-title">
 				<div className="modal-header">
-					<h3 id="skills-title" className="modal-title">
-						技能
-					</h3>
+					<div>
+						<div className="modal-eyebrow">CAPABILITIES</div>
+						<h3 id="skills-title" className="modal-title">
+							技能
+						</h3>
+					</div>
 				</div>
 				<div className="skills-body">
 					<div className="skills-preset-row">

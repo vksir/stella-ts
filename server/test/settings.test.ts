@@ -52,6 +52,32 @@ describe("运行配置解析", () => {
 			expect(resolveRuntimeConfig({ defaultMaxTurns: value }).defaultMaxTurns).toBe(DEFAULT_MAX_TURNS);
 		}
 	});
+
+	it("预设 thinkingLevel：合法值保留，非法值只忽略该字段", () => {
+		const config = resolveRuntimeConfig({
+			presets: [
+				{ id: "low", name: "低思考", thinkingLevel: "low" },
+				{ id: "max", name: "最高思考", thinkingLevel: "max" },
+				{ id: "bad", name: "非法思考", thinkingLevel: "extreme", tools: ["read"] },
+				{ id: "stringy", name: "字符串", thinkingLevel: 3 },
+			],
+		});
+		expect(config.presets.find((preset) => preset.id === "low")?.thinkingLevel).toBe("low");
+		expect(config.presets.find((preset) => preset.id === "max")?.thinkingLevel).toBe("max");
+		// 非法值不拖垮整个预设：预设仍生效，只是没有 thinkingLevel 字段。
+		const bad = config.presets.find((preset) => preset.id === "bad");
+		expect(bad).toBeDefined();
+		expect(bad?.tools).toEqual(["read"]);
+		expect(bad !== undefined && "thinkingLevel" in bad).toBe(false);
+		const stringy = config.presets.find((preset) => preset.id === "stringy");
+		expect(stringy).toBeDefined();
+		expect(stringy !== undefined && "thinkingLevel" in stringy).toBe(false);
+	});
+
+	it("内置 standard 默认 medium，且与 DEFAULT_RUNTIME_CONFIG 一致", () => {
+		expect(DEFAULT_RUNTIME_CONFIG.presets[0]?.thinkingLevel).toBe("medium");
+		expect(resolveRuntimeConfig(undefined).presets[0]?.thinkingLevel).toBe("medium");
+	});
 });
 
 describe("配置存储：读取与失败回退", () => {

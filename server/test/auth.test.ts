@@ -11,18 +11,21 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hono } from "hono";
 import { createApp } from "../src/api.js";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, isLoopbackHost, type StellaConfig } from "../src/config.js";
 import { createStella, type Stella } from "../src/stella.js";
 import {
 	LOGIN_FAILURE_LIMIT,
+	MIN_LOGIN_KEY_LENGTH,
 	TOKEN_TTL_MS,
+	assertDeploymentSafety,
+	assertLoginKeyStrength,
 	issueToken,
 	loginKeyMatches,
 	resolveLoginKey,
 	verifyToken,
 } from "../src/auth.js";
 
-const KEY = "test-login-key-0123456789abcdef";
+const KEY = "test-login-key-0123456789abcdefghijklmnopqrstuvwxyz";
 const ANSWER = "这是登录之后才看得到的回答。";
 
 describe("准入：登录密钥与票据", () => {
@@ -134,8 +137,7 @@ describe("准入：登录密钥与票据", () => {
 		expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
 	});
 
-	it("SSE 无凭据 401，带 Bearer 可订阅", async () => {
-		const denied = await app.request("/api/conversations/1/events");
+	it("SSE 无凭据 401，带 Bearer 可订阅", async () => {		const denied = await app.request("/api/conversations/1/events");
 		expect(denied.status).toBe(401);
 
 		const created = await app.request("/api/conversations", { method: "POST", headers: bearer() });
@@ -143,6 +145,8 @@ describe("准入：登录密钥与票据", () => {
 
 		const response = await app.request(`/api/conversations/${id}/events`, { headers: bearer() });
 		expect(response.status).toBe(200);
+		// 反向代理（nginx）默认缓冲；应用必须显式告诉它别缓。
+		expect(response.headers.get("x-accel-buffering")).toBe("no");
 		const frames = await readFrames(response);
 		expect(frames[0]?.event).toBe("view");
 		expect((JSON.parse(frames[0]!.data) as { conversation: { id: number } }).conversation.id).toBe(id);
@@ -234,6 +238,80 @@ describe("登录密钥来源", () => {
 		expect(loginKeyMatches(KEY, KEY)).toBe(true);
 		expect(loginKeyMatches(KEY, `${KEY}x`)).toBe(false);
 		expect(loginKeyMatches(KEY, KEY.slice(0, -1))).toBe(false);
+	});
+});
+
+describe("部署安全断言", () => {
+	// 不访问磁盘：loadConfig 只做路径解析；这里只测纯函数。
+	const base = loadConfig({ STELLA_FAUX: "1", STELLA_DATA_DIR: "stella-config-test" });
+	const config = (patch: Partial<StellaConfig>): StellaConfig => ({ ...base, ...patch });
+
+	it("回环地址判定", () => {
+		for (const host of ["127.0.0.1", "127.0.0.2", "localhost", "::1", "[::1]", "::ffff:127.0.0.1"]) {
+			expect(isLoopbackHost(host), host).toBe(true);
+		}
+		for (const host of ["0.0.0.0", "::", "192.168.1.10", "stella.example.com"]) {
+			expect(isLoopbackHost(host), host).toBe(false);
+		}
+	});
+
+	it("弱密钥直接拒绝", () => {
+		expect(() => assertLoginKeyStrength("short")).toThrow(/至少 32/);
+		expect(() => assertLoginKeyStrength(KEY)).not.toThrow();
+		expect(KEY.length).toBeGreaterThanOrEqual(MIN_LOGIN_KEY_LENGTH);
+	});
+
+	it("faux + 非回环 + 无密钥拒绝启动", () => {
+		expect(() => assertDeploymentSafety(config({ host: "0.0.0.0" }))).toThrow(/没有启用登录密钥/);
+		// 回环上的 faux（测试/本地体验）仍然允许
+		expect(() => assertDeploymentSafety(config({ host: "127.0.0.1" }))).not.toThrow();
+	});
+
+	it("非回环 + 未显式配置 HTTPS 拒绝启动", () => {
+		expect(() => assertDeploymentSafety(config({ host: "0.0.0.0", token: KEY }))).toThrow(
+			/STELLA_REQUIRE_HTTPS/,
+		);
+	});
+
+	it("可信代理不能是 0.0.0.0/0（否则 XFF/XFP 可伪造）", () => {
+		expect(() =>
+			assertDeploymentSafety(
+				config({ host: "127.0.0.1", token: KEY, trustedProxies: ["0.0.0.0/0"] }),
+			),
+		).toThrow(/0\.0\.0\.0\/0/);
+	});
+
+	it("显式关闭 HTTPS（局域网自担风险）时放行", () => {
+		expect(() =>
+			assertDeploymentSafety(
+				config({ host: "0.0.0.0", token: KEY, httpsConfigured: true, httpsRequired: false }),
+			),
+		).not.toThrow();
+	});
+
+	it("非回环 + HTTPS + 强密钥放行", () => {
+		expect(() =>
+			assertDeploymentSafety(
+				config({ host: "0.0.0.0", token: KEY, httpsConfigured: true, httpsRequired: true }),
+			),
+		).not.toThrow();
+	});
+
+	it("只有显式 1/0/true/false 才算配置过 HTTPS", () => {
+		expect(loadConfig({}).httpsConfigured).toBe(false);
+		expect(loadConfig({ STELLA_REQUIRE_HTTPS: "0" })).toMatchObject({
+			httpsRequired: false,
+			httpsConfigured: true,
+		});
+		expect(loadConfig({ STELLA_REQUIRE_HTTPS: "true" })).toMatchObject({
+			httpsRequired: true,
+			httpsConfigured: true,
+		});
+		// on/yes 等未知值按“未配置”处理，避免被当成知情关闭
+		expect(loadConfig({ STELLA_REQUIRE_HTTPS: "yes" })).toMatchObject({
+			httpsRequired: false,
+			httpsConfigured: false,
+		});
 	});
 });
 

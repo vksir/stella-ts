@@ -1,6 +1,8 @@
 # 前端渲染内核重写：React 18 + 每 key 订阅 + 增量 Markdown
 
-> **Status: 已采纳（accepted，第二轮）**。第一轮曾回退（rejected）：当时内核机制正确但
+> **Status: 已采纳（accepted，第二轮）**。**观感基准（与 dsh 逐项对齐）已被
+> [ADR-0006](0006-paper-workbench-redesign.md) 取代**；渲染内核条款继续有效。
+> 第一轮曾回退（rejected）：当时内核机制正确但
 > 整体观感不及既有实现，属于"换框架级大步改造 + 观感未同步对齐"。第二轮改为
 > **内核替换 + 逐项观感整改 + 第三方独立评审闭环**（`.scratch/webui-react/eval/`
 > 五轮），先落地 React 内核，再由独立评审（另一个 agent，deepseek-flash）给出像素级

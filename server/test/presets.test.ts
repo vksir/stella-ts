@@ -22,7 +22,7 @@ describe("预设：配置解析与创建会话", () => {
 			config.configPath,
 			JSON.stringify({
 				defaultPreset: "readonly",
-				presets: [{ id: "readonly", name: "只读", tools: ["read"], maxTurns: 5 }],
+				presets: [{ id: "readonly", name: "只读", tools: ["read"], maxTurns: 5, thinkingLevel: "low" }],
 			}),
 			"utf8",
 		);
@@ -90,6 +90,23 @@ describe("预设：配置解析与创建会话", () => {
 		const names = agent.tools.map((tool) => tool.name);
 		expect(names).toEqual(expect.arrayContaining(["read", "write", "edit", "bash", "codemode", "subagent"]));
 		expect(agent.maxTurns).toBe(128);
+		// 内置标准预设默认开中等思考（ADR-0007）。
+		expect(agent.thinkingLevel).toBe("medium");
+	});
+
+	it("文件预设自带 thinkingLevel 时写进会话 agent", async () => {
+		const app = createApp(stella);
+		// before 里的 readonly 预设写了 thinkingLevel: "low"
+		const created = await app.request("/api/conversations", {
+			headers: { "content-type": "application/json" },
+			method: "POST",
+			body: JSON.stringify({ preset: "readonly" }),
+		});
+		expect(created.status).toBe(201);
+		const { id } = (await created.json()) as { id: number };
+		const conversation = await stella.harness.conversation(id as ConversationId, BACKGROUND_CONTEXT);
+		const agent = await conversation!.agent(BACKGROUND_CONTEXT);
+		expect(agent.thinkingLevel).toBe("low");
 	});
 
 	it("tools 与 extensions 是两个独立轴：只过滤 tools 时扩展的提示词段仍在", async () => {

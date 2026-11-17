@@ -16,6 +16,10 @@ export interface ContentBlock {
 	id?: string;
 	arguments?: Record<string, unknown>;
 	argumentsError?: string;
+	/** 思考块（pi-ai 的 ThinkingContent）：正文。 */
+	thinking?: string;
+	/** 思考块被安全过滤抹掉（原文不可读，密文在 thinkingSignature 里）。 */
+	redacted?: boolean;
 }
 
 export interface ModelMessage {
@@ -160,6 +164,8 @@ export interface ConversationSummary {
 	id: number;
 	title: string | null;
 	createdAt?: number;
+	/** 最近活动时间（epoch 毫秒）；旧会话缺失时回落 createdAt。 */
+	updatedAt?: number;
 	preset?: string | null;
 }
 
@@ -272,6 +278,21 @@ export function extractTextOf(content: string | ContentBlock[] | undefined): str
 
 export function extractText(message: ModelMessage | undefined): string {
 	return message === undefined ? "" : extractTextOf(message.content);
+}
+
+/** 思考块抽取（string content 没有思考，返回 ""）。 */
+export function extractThinkingOf(content: string | ContentBlock[] | undefined): string {
+	if (content === undefined || typeof content === "string") return "";
+	return content
+		.filter((block) => block.type === "thinking" && block.redacted !== true && typeof block.thinking === "string")
+		.map((block) => (block.thinking ?? "").trim())
+		.filter((text) => text.length > 0)
+		.join("\n\n")
+		.trim();
+}
+
+export function extractThinking(message: ModelMessage | undefined): string {
+	return message === undefined ? "" : extractThinkingOf(message.content);
 }
 
 export function isToolResult(message: ModelMessage | undefined): message is ToolResultMessage {

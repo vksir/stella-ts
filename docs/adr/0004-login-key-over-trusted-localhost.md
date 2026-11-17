@@ -18,7 +18,13 @@ Stella 能读写文件、执行命令，而服务端原先监听全部网卡且�
   要让所有浏览器重新登录，就轮换登录密钥并重启进程。这是「无状态 + Bearer」的必付账，
   写在 README 里，而不是悄悄不写。
 - **首次部署自动生成**。没有 `STELLA_TOKEN` 时生成一枚并追加进已存在的 `.env`；
-  找不到可写的 `.env` 就报错并提示 `npm run token:gen`。faux 模式与测试不启用登录。
+  找不到可写的 `.env` 就报错并提示 `npm run token:gen`。faux 模式与测试在未配密钥时不启用登录。
+- **HTTPS 是准入的一部分**。`STELLA_REQUIRE_HTTPS=1` 时，除 `/api/health` 外
+  **所有 `/api` 请求**都要求可信 `X-Forwarded-Proto: https`，不只是登录；直连端口即使拿到票据
+  也无法用明文调用 API。反代明确标为 `http` 时始终拒绝。
+- **启动断言**。非回环监听 + 无登录密钥（典型是 faux 未配 `STELLA_TOKEN`）→ 拒绝启动；
+  登录密钥短于 32 字符 → 拒绝启动；非回环且未显式设置 `STELLA_REQUIRE_HTTPS` → 拒绝启动
+  （显式 `0`/`false` 才允许局域网明文，自担风险）。
 - **SSE 改 `fetch` 读流**。`EventSource` 无法自定义请求头（规范限制），所以实时通道改为
   `fetch` 读流并手写帧解析（`web/src/sse.ts`）；凭据只走请求头，URL 里不出现任何凭据。
 - **默认绑定回环地址**。`STELLA_HOST` 缺省 `127.0.0.1`，对外必须显式设置。
@@ -47,5 +53,9 @@ Stella 能读写文件、执行命令，而服务端原先监听全部网卡且�
   断线重连、静默守护（20s/60s）、`?from=` 续订语义保持不变，由 `web/src/sse.ts` 的帧解析承担。
 - 票据 30 天固定过期意味着：一台不再使用的设备，其票据在到期前仍然有效。
 - 登录失败按来源地址限速（60 秒内 5 次），失败日志只记来源与次数，不记用户输入。
-- 测试与 faux 体验免登录（服务端只在显式配置了 `STELLA_TOKEN` 时才启用），
-  因此现有 16 个服务端测试无需改动鉴权装配。
+- 测试与 faux 体验免登录（服务端只在显式配置了 `STELLA_TOKEN` 时才启用）；
+  未配密钥的 faux 只允许回环监听，非回环会在启动时失败。
+- HTTPS 闸门作用在登录之后的普通 API 上；已签发的票据在 `STELLA_REQUIRE_HTTPS=1` 下也不能
+  通过直连端口以明文使用。
+- 不做 Origin/Host 校验的取舍不覆盖 **clickjacking**：Bearer 不会被自动附带，但 frame 内的
+  应用自身会带票据发请求。公网部署仍建议反代加 `frame-ancestors 'none'` / `X-Frame-Options: DENY`。

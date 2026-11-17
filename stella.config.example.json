@@ -25,6 +25,8 @@
 			"id": "standard",
 			"name": "标准",
 			"description": "全部已安装能力：读写文件、执行命令、代码模式、子代理、全部技能。",
+			"$comment": "thinkingLevel：该预设创建的会话是否向 provider 请求思考内容（off / minimal / low / medium / high / xhigh / max）。缺省 = off；内置标准预设为 medium，显式写 off 可关闭思考。",
+			"thinkingLevel": "medium",
 			"extensions": null,
 			"skills": null,
 			"tools": null,
